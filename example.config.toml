@@ -1,0 +1,40 @@
+# 线程数 推荐 CPU 核数 * 2
+threads = 16
+# 代理文件路径 未完工
+proxy_file = "proxy.json"
+
+# 目标配置
+[[Target]]
+# URL 地址
+url = "https://example.com/attack1"
+# 请求方法
+method = "GET"
+# 请求参数
+params = { user = "${user}", password = "${password}" }
+
+[[Target]]
+url = "https://example.com/attack2"
+method = "POST"
+params = { name = "${user}", pass = "${password}" }
+
+[[Target]]
+url = "https://example.com/attack3"
+method = "GET"
+params = { username = "${user}" }
+
+[[Target]]
+url = "https://example.com/attack4"
+method = "GET"
+headers = { "Content-Type" = "application/x-www-form-urlencoded" }
+
+[[Target]]
+url = "https://example.com/attack6"
+method = "POST"
+headers = { "Content-Type" = "application/json" }
+params = { username = "${user}", password = "${password}", encoded_data = "{base64:\"文字\"}" }
+
+[[Target]]
+url = "https://example.com/attack7"
+method = "POST"
+headers = { "Content-Type" = "application/json" }
+params = { username = "${user}", password = "${password}", encoded_data = "{base64:{base64:${password}}}" }

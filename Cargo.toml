@@ -1,0 +1,17 @@
+[package]
+name = "stormin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.9.1"
+serde = { version = "1.0.219", features = ["derive"] }
+toml = "0.8.22"
+base64 = "0.21.0"
+ratatui = "0.24.0"
+reqwest = { version = "0.12", features = ["blocking"] }
+crossterm = "0.29"
+crossbeam-channel = "0.5.15"
+ctrlc = "3.4.6"
+sysinfo = "0.34.2"
+clipboard = "0.5"
