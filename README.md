@@ -10,7 +10,9 @@ Stormin 是一个拥有TUI界面的注册轰炸机，专门用于整治盗号网
 
 ## 配置文件说明
 
-Stormin 使用 TOML 格式的配置文件来定义请求目标和参数。配置文件名为 `config.toml` ，可以参考项目的默认配置文件 `example.config.toml`。
+Stormin 使用 TOML 格式的文件来配置程序。配置文件名为 `config.toml` ，可以参考项目的默认配置文件 `example.config.toml`。
+
+使用时请确保同级文件夹下有 `config.toml` 配置文件。
 
 ### 基本结构
 
