@@ -22,3 +22,10 @@ pest = "2.7"
 pest_derive = "2.7"
 lazy_static = "1.4.0"
 regex = "1.11.1"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

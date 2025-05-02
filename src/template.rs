@@ -36,29 +36,16 @@ pub fn apply_function(name: &str, args: Vec<String>, logger: Logger) -> String {
         // Other functions
         "base64" => {
             // base64 takes one argument
-            if let Some(arg) = args.first() {
-                STANDARD.encode(arg)
-            } else {
-                logger.warning(&format!(
-                    "Warning: base64 function called with no arguments."
-                ));
-                String::new()
+            match args.first() {
+                Some(arg) => STANDARD.encode(arg),
+                None => {
+                    logger.warning("Warning: base64 function called with no arguments.");
+                    String::new()
+                }
             }
         }
-        "upper" => {
-            if let Some(arg) = args.first() {
-                arg.to_uppercase()
-            } else {
-                String::new()
-            }
-        }
-        "lower" => {
-            if let Some(arg) = args.first() {
-                arg.to_lowercase()
-            } else {
-                String::new()
-            }
-        }
+        "upper" => args.first().map_or_else(String::new, |arg| arg.to_uppercase()),
+        "lower" => args.first().map_or_else(String::new, |arg| arg.to_lowercase()),
         "replace" => {
             // replace:target,old,new
             if args.len() == 3 {
@@ -73,28 +60,31 @@ pub fn apply_function(name: &str, args: Vec<String>, logger: Logger) -> String {
         }
         "substr" => {
             // substr:target,start,length (optional)
-            if args.len() >= 2 {
-                let target = &args[0];
-                if let Ok(start) = args[1].parse::<usize>() {
-                    let len = if args.len() >= 3 {
-                        args[2].parse::<usize>().ok()
-                    } else {
-                        None // Take rest of string if no length specified
-                    };
-
-                    if let Some(l) = len {
-                        target.chars().skip(start).take(l).collect()
-                    } else {
-                        target.chars().skip(start).collect()
-                    }
-                } else {
-                    logger.warning(&format!("Warning: substr start index must be a number."));
-                    target.clone()
-                }
-            } else {
-                logger.warning(&format!("Warning: substr function expects at least 2 arguments (target, start). Got {}.", args.len()));
-                args.first().cloned().unwrap_or_default()
+            if args.len() < 2 {
+                logger.warning(&format!(
+                    "Warning: substr function expects at least 2 arguments (target, start). Got {}.",
+                    args.len()
+                ));
+                return args.first().cloned().unwrap_or_default();
             }
+
+            let target = &args[0];
+            let start = match args[1].parse::<usize>() {
+                Ok(s) => s,
+                Err(_) => {
+                    logger.warning("Warning: substr start index must be a number.");
+                    return target.clone();
+                }
+            };
+
+            // Take rest of string if no length specified or length parsing fails
+            if args.len() >= 3 {
+                if let Ok(len) = args[2].parse::<usize>() {
+                    return target.chars().skip(start).take(len).collect();
+                }
+            }
+            
+            target.chars().skip(start).collect()
         }
         "random" => {
             // random:type,...args
