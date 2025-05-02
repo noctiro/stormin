@@ -1,7 +1,7 @@
 use pest::Parser;
 use pest_derive::Parser;
 use serde::Deserialize;
-use std::{error::Error, fs};
+use std::{error::Error, fs, num::NonZeroUsize};
 
 // --- Pest Parser Setup ---
 
@@ -28,7 +28,7 @@ pub enum TemplateAstNode {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawConfig {
-    pub proxy_file: String,
+    pub proxy_file: Option<String>,
     pub threads: Option<usize>,
     #[serde(rename = "Target")]
     pub targets: Vec<RawTarget>,
@@ -152,7 +152,9 @@ fn parse_template_string(input: &str) -> Result<TemplateAstNode, pest::error::Er
 }
 
 // Recursively builds the AST from Pest parse pairs
-fn build_ast_from_pair(pair: pest::iterators::Pair<Rule>) -> Result<TemplateAstNode, pest::error::Error<Rule>> {
+fn build_ast_from_pair(
+    pair: pest::iterators::Pair<Rule>,
+) -> Result<TemplateAstNode, pest::error::Error<Rule>> {
     match pair.as_rule() {
         Rule::template => Ok(TemplateAstNode::Root(
             pair.into_inner()
@@ -167,7 +169,10 @@ fn build_ast_from_pair(pair: pest::iterators::Pair<Rule>) -> Result<TemplateAstN
             let name = identifier_pair.as_str().to_string();
 
             if let Some(args_pair) = inner_rules.next() {
-                let args = args_pair.into_inner().map(build_ast_from_pair).collect::<Result<Vec<TemplateAstNode>, pest::error::Error<Rule>>>()?;
+                let args = args_pair
+                    .into_inner()
+                    .map(build_ast_from_pair)
+                    .collect::<Result<Vec<TemplateAstNode>, pest::error::Error<Rule>>>()?;
                 Ok(TemplateAstNode::FunctionCall { name, args })
             } else {
                 // Support identifier without arguments: treat as function call with empty arguments
@@ -176,7 +181,7 @@ fn build_ast_from_pair(pair: pest::iterators::Pair<Rule>) -> Result<TemplateAstN
                     args: Vec::new(),
                 })
             }
-        },
+        }
 
         Rule::argument => build_ast_from_pair(pair.into_inner().next().unwrap()),
 
@@ -189,7 +194,7 @@ fn build_ast_from_pair(pair: pest::iterators::Pair<Rule>) -> Result<TemplateAstN
             };
             let unescaped = content.replace("\\\"", "\"").replace("\\\\", "\\");
             Ok(TemplateAstNode::Static(unescaped))
-        },
+        }
 
         Rule::static_text => Ok(TemplateAstNode::Static(pair.as_str().to_string())),
         Rule::number => Ok(TemplateAstNode::Static(pair.as_str().to_string())),
@@ -197,18 +202,18 @@ fn build_ast_from_pair(pair: pest::iterators::Pair<Rule>) -> Result<TemplateAstN
 
         Rule::template_string => {
             // Process backtick template string with potential nested expressions
-            let children: Vec<TemplateAstNode> = pair
-                .into_inner()
-                .map(build_ast_from_pair)
-                .collect::<Result<Vec<TemplateAstNode>, pest::error::Error<Rule>>>()?;
-            
+            let children: Vec<TemplateAstNode> =
+                pair.into_inner()
+                    .map(build_ast_from_pair)
+                    .collect::<Result<Vec<TemplateAstNode>, pest::error::Error<Rule>>>()?;
+
             Ok(TemplateAstNode::TemplateString(children))
-        },
+        }
 
         Rule::template_string_literal => {
             // Handle literal text parts in template strings
             Ok(TemplateAstNode::Static(pair.as_str().to_string()))
-        },
+        }
 
         _ => unreachable!(
             "Unexpected rule: {:?} in build_ast_from_pair",
@@ -224,18 +229,41 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
 
     // 读取代理文件并筛选
     let mut proxies = Vec::new();
-    if !raw.proxy_file.is_empty() && std::path::Path::new(&raw.proxy_file).exists() {
-        let proxy_content = fs::read_to_string(&raw.proxy_file)?;
-        for line in proxy_content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Some(proxy) = ProxyConfig::parse(line) {
-                proxies.push(proxy);
+    if let Some(proxy_path_str) = &raw.proxy_file {
+        if !proxy_path_str.trim().is_empty() {
+            let proxy_path = std::path::Path::new(proxy_path_str);
+            if proxy_path.exists() {
+                let proxy_content = fs::read_to_string(proxy_path)?;
+                for line in proxy_content.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+                    if let Some(proxy) = ProxyConfig::parse(line) {
+                        proxies.push(proxy);
+                    }
+                }
+            } else {
+                eprintln!(
+                    "Warning: proxy_file '{}' not found, ignoring.",
+                    proxy_path_str
+                );
             }
         }
     }
+
+    // 处理线程数，默认为 CPU 核数 * 4
+    let threads = if let Some(t) = raw.threads {
+        if t < 1 {
+            return Err("Config error: threads must be at least 1".into());
+        }
+        t
+    } else {
+        std::thread::available_parallelism()
+            .unwrap_or(NonZeroUsize::new(1).unwrap())
+            .get()
+            * 4
+    };
 
     let mut compiled: Vec<CompiledTarget> = Vec::new();
     for raw_t in raw.targets {
@@ -252,8 +280,9 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
             params,
         });
     }
+
     Ok(AttackConfig {
-        threads: raw.threads.unwrap_or(1),
+        threads,
         targets: compiled,
         proxies,
     })

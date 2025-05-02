@@ -1,6 +1,6 @@
 use crate::{
     config::TemplateAstNode,
-    generator::{password::generate_password, qqid::generate_qq_id, username::generate_username},
+    generator::{email::generate_email, password::generate_password, qqid::generate_qq_id, username::generate_username},
     logger::Logger,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -32,6 +32,12 @@ pub fn apply_function(name: &str, args: Vec<String>, logger: Logger) -> String {
                 logger.warning(&format!("Warning: qqid function does not take arguments."));
             }
             generate_qq_id(&mut rng())
+        }
+        "email" => {
+            if !args.is_empty() {
+                logger.warning(&format!("Warning: email function does not take arguments."));
+            }
+            generate_email(&mut rng())
         }
         // Other functions
         "base64" => {
