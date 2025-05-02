@@ -1,5 +1,5 @@
-pub mod user;
-pub use user::UsernameGenerator;
+pub mod username;
+pub use username::UsernameGenerator;
 pub mod password;
 pub use password::ChineseSocialPasswordGenerator;
 pub use password::RandomPasswordGenerator;

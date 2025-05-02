@@ -1,40 +1,111 @@
-# 线程数 推荐 CPU 核数 * 2
+# 线程数 推荐 CPU 核数 * 4
 threads = 16
-# 代理文件路径 未完工
-proxy_file = "proxy.json"
+# 代理文件路径 (如果文件不存在或为空，则不使用代理)
+proxy_file = "proxy.txt"
 
-# 目标配置
+# --- 目标配置示例 ---
+
+# 示例 1: 基本 GET 请求，使用随机用户名和密码
 [[Target]]
-# URL 地址
-url = "https://example.com/attack1"
-# 请求方法
+url = "https://example.com/login"
 method = "GET"
-# 请求参数
-params = { user = "${user}", password = "${password}" }
+params = { user = "${username}", pass = "${password}" }
 
+# 示例 2: POST 请求，使用随机用户名和密码
 [[Target]]
-url = "https://example.com/attack2"
+url = "https://example.com/register"
 method = "POST"
-params = { name = "${user}", pass = "${password}" }
+params = { name = "${username}", password = "${password}" }
 
+# 示例 3: 使用随机 QQ 号
 [[Target]]
-url = "https://example.com/attack3"
+url = "https://example.com/bind_qq"
+method = "POST"
+params = { qqid = "${qqid}" }
+
+# 示例 4: 自定义请求头
+[[Target]]
+url = "https://example.com/api/resource"
 method = "GET"
-params = { username = "${user}" }
+headers = { "X-Custom-Header" = "SomeValue", "Authorization" = "Bearer ${random:chars,32}" }
 
+# 示例 5: 使用 base64 编码字符串字面量
 [[Target]]
-url = "https://example.com/attack4"
+url = "https://example.com/submit_data"
+method = "POST"
+params = { data = "${base64:\"Hello World!\"}" } # 注意字符串字面量需要双引号
+
+# 示例 6: 使用 upper 和 lower 函数
+[[Target]]
+url = "https://example.com/case_test"
+method = "POST"
+params = { upper_user = "${upper:${username}}", lower_pass = "${lower:${password}}" }
+
+# 示例 7: 使用 replace 函数 (将用户名中的 '@' 替换为 '_')
+[[Target]]
+url = "https://example.com/update_profile"
+method = "PUT"
+params = { sanitized_user = "${replace:${username},\"@\",\"_\"}" } # 注意 '@' 和 '_' 也是字符串字面量
+
+# 示例 8: 使用 substr 函数 (提取密码前 8 位)
+[[Target]]
+url = "https://example.com/partial_verify"
+method = "POST"
+params = { user = "${username}", pass_prefix = "${substr:${password},0,8}" } # 从索引 0 开始，取 8 个字符
+
+# 示例 9: 使用 random:chars 生成指定长度随机字符串
+[[Target]]
+url = "https://example.com/generate_token"
 method = "GET"
-headers = { "Content-Type" = "application/x-www-form-urlencoded" }
+params = { token = "${random:chars,16}" } # 生成 16 位随机字母数字组合
 
+# 示例 10: 使用 random:chars 生成指定字符集的随机字符串
 [[Target]]
-url = "https://example.com/attack6"
+url = "https://example.com/generate_code"
+method = "GET"
+params = { code = "${random:chars,6,\"abcdef0123456789\"}" } # 生成 6 位十六进制字符
+
+# 示例 11: 使用 random:number 生成指定范围内的随机数
+[[Target]]
+url = "https://example.com/random_action"
+method = "GET"
+params = { id = "${random:number,1000,9999}", type = "${random:number,5}" } # 生成 1000 到 9999 之间的随机数 # 生成 0 到 5 之间的随机数
+
+# 示例 12: 嵌套函数调用 (base64 编码替换后的用户名)
+[[Target]]
+url = "https://example.com/complex_submit"
 method = "POST"
 headers = { "Content-Type" = "application/json" }
-params = { username = "${user}", password = "${password}", encoded_data = "{base64:\"文字\"}" }
+# 注意：TOML 对值的类型有限制，直接放 JSON 可能不标准。
+# 这里仅作模板语法演示，实际应用可能需要将整个 body 作为模板处理。
+params = { user_info = "${base64:${replace:${username},\"@\",\"_\"}}", raw_pass = "${password}" }
 
+# 示例 13: 混合静态文本和表达式
 [[Target]]
-url = "https://example.com/attack7"
+url = "https://example.com/api/users/${random:number,1,100}/profile" # URL 路径中使用表达式
+method = "GET"
+headers = { "User-Agent" = "MyClient/${random:chars,5}" } # Header 中使用表达式
+
+# 示例 14: JSON Body 示例 (更复杂的嵌套和类型)
+# 注意: TOML 本身不支持直接嵌入复杂 JSON。
+# 实际应用中，可能需要一个单独的 body 模板字段，或者在代码中处理。
+# 此处仅为展示模板语法可能性。
+[[Target]]
+url = "https://example.com/post_json"
 method = "POST"
 headers = { "Content-Type" = "application/json" }
-params = { username = "${user}", password = "${password}", encoded_data = "{base64:{base64:${password}}}" }
+# 假设有一个 body 字段可以处理模板
+# body = '''
+# {
+#   "username": "${upper:${username}}",
+#   "credentials": {
+#     "type": "password",
+#     "value": "${base64:${password}}"
+#   },
+#   "session_id": "${random:chars,20}",
+#   "random_code": ${random:number, 100, 200},
+#   "metadata": "Processed by ${replace:\"My System\",\" \",\"-\"}"
+# }
+# '''
+# 由于 TOML 限制，我们还是放在 params 里演示语法
+params = { json_payload = "{ \"user\": \"${upper:${username}}\", \"pass_hash\": \"${base64:${password}}\", \"sid\": \"${random:chars,20}\" }" }

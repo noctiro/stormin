@@ -1,0 +1,32 @@
+// Define whitespace, which is ignored between rules unless specified otherwise
+WHITESPACE = _{ " " | "\t" }
+
+// Top-level rule: matches the entire input string potentially containing expressions and static text
+template = { SOI ~ (expression | static_text)* ~ EOI }
+
+// An expression like ${func:arg1,"arg2",${nested}} or ${variable}
+// It starts with ${, has an identifier, optionally followed by : and arguments, and ends with }
+expression = { "${" ~ identifier ~ (":" ~ arguments)? ~ "}" }
+
+// Identifier for function or variable names (alphanumeric + underscore)
+identifier = @{ (ASCII_ALPHANUMERIC | "_")+ }
+
+// List of arguments separated by commas
+// Allows optional whitespace around the comma
+arguments = { argument ~ ("," ~ argument)* }
+
+// An individual argument can be a string literal or another (potentially nested) expression
+argument = { string_literal | expression }
+
+// Static text is any sequence of characters not starting an expression `${`
+// Uses a negative lookahead `!{`
+static_text = @{ (!("${") ~ ANY)+ }
+
+// String literal enclosed in double quotes
+// Handles escaped quotes (\") and escaped backslashes (\\) within the string
+string_literal = @{ "\"" ~ inner_string ~ "\"" }
+inner_string = { (escape_sequence | !("\"" | "\\") ~ ANY)* }
+escape_sequence = { "\\" ~ ("\"" | "\\") }
+
+// Pest built-ins
+ASCII_ALPHANUMERIC = _{ 'a'..'z' | 'A'..'Z' | '0'..'9' }

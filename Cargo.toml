@@ -9,9 +9,21 @@ serde = { version = "1.0.219", features = ["derive"] }
 toml = "0.8.22"
 base64 = "0.21.0"
 ratatui = "0.24.0"
-reqwest = { version = "0.12", features = ["blocking"] }
+# Modify reqwest: remove blocking, add async features like json and a TLS backend (rustls-tls)
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "socks"], default-features = false }
 crossterm = "0.29"
-crossbeam-channel = "0.5.15"
+crossbeam-channel = "0.5.15" # Keep crossbeam for now, might switch later if needed
 ctrlc = "3.4.6"
 sysinfo = "0.34.2"
 clipboard = "0.5"
+url = "2"
+serde_json = "1.0.140"
+# Add tokio runtime
+tokio = { version = "1", features = ["full"] }
+
+# Pest parser generator
+pest = "2.7"
+pest_derive = "2.7"
+
+# For compile-time static initialization
+lazy_static = "1.4.0"
