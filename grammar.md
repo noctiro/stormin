@@ -1,115 +1,100 @@
 # 模板表达式语法
 
-本说明文档定义了模板表达式的语法，用于在配置文件等场景中进行动态字符串生成。
+本说明文档定义了模板表达式语法，用于配置文件中的动态字符串生成。
 
-快速查看 - [内置函数列表](#内置函数)
+快速查看 - [内置函数列表](#内置函数列表)
 
 ---
 
 ## 基本格式
 
-表达式使用 `${...}` 包裹：
+表达式使用 `${…}` 包裹：
 
 ```text
-${<function_name>[:<arg1>[,<arg2>,...]]}
+${<函数名>[:<参数1>[,<参数2>,…]]}
 ```
 
-- `<function_name>`：函数名
-- `:<args>`：可选，用于函数调用。多个参数用逗号 `,` 分隔
+- `<函数名>`：必填
+- `:<参数列表>`：可选，多参数用逗号 `,` 分隔
+- 如果函数不需要参数，可写成 `${fn}` 或 `${fn:}`
 
 ---
 
-## 函数调用
+## 支持的参数类型
 
-函数使用 `函数名:参数列表` 的形式调用。如果函数不需要参数，可以省略冒号和参数列表 (`${function_name}` 或 `${function_name:}` 效果相同)。
+1. **字符串字面量**（双引号）
 
-### 参数类型支持
-
-1. **字符串字面量**（需用双引号包裹）：
-
-   - 内部的 `"` 和 `\` 需要转义为 `\"` 和 `\\`
-   - 示例：
+   - 内部 `"` 和 `\` 用 `\"`、`\\` 转义
+   - 例：
 
      ```text
      ${base64:"Hello, world!"}
-     ${replace:"File \"C:\\path\"","\\","/"}
+     ${replace:"C:\\path\\file.txt","\\","/"}
      ```
 
-2. **函数嵌套**：
+2. **数字字面量**
 
-   - 函数可以作为其他函数的参数使用
-   - 示例：
+   - 例：`${substr:"abcdef",2,3}`
+
+3. **嵌套函数调用**
+
+   - 例：`${upper:${username}}`
+
+4. **反引号模板字符串**
+
+   - 支持在参数中使用 `` `${…}` `` 嵌套表达式
+   - 例：
 
      ```text
-     ${upper:${user}}
-     ${base64:${upper:${user}}}
+     ${base64:`ID:${qqid}, user:${username}`}
      ```
+      - 先渲染 `` `User=${username};ID=${qqid}` `` 结果
+      - 再对整体做 Base64 编码
 
 ---
 
-## 内置函数
+## 内置函数列表
 
-以下是当前支持的函数（实现见 `src/template.rs`）：
-
-| 函数名     | 参数                        | 说明                                                           | 示例                                               |
-| ---------- | --------------------------- | -------------------------------------------------------------- | -------------------------------------------------- |
-| `username` | (无)                        | 随机用户名名                                                   | `${username}`                                      |
-| `password` | (无)                        | 随机密码码                                                     | `${password}`                                      |
-| `qqid`     | (无)                        | 生成随机 QQ 号                                                 | `${qqid}`                                          |
-| `base64`   | `string`                    | 将输入字符串进行 Base64 编码                                   | `${base64:"test"}` → `dGVzdA==`                    |
-| `upper`    | `string`                    | 将字符串转为大写                                               | `${upper:"hello"}` → `HELLO`                       |
-| `lower`    | `string`                    | 将字符串转为小写                                               | `${lower:"HELLO"}` → `hello`                       |
-| `replace`  | `str`, `old`, `new`         | 将 `str` 中的所有 `old` 替换为 `new`                           | `${replace:${user},"@","_"}`                       |
-| `substr`   | `str`, `start`\[, `length`] | 提取从 `start` 开始（从 0 计数）的子串，可选 `length` 限制长度 | `${substr:${password},0,4}`                        |
-| `random`   | `type`, ...                 | 生成随机数据（详见下方）                                       | `${random:chars,10}` <br> `${random:number,1,100}` |
+| 函数       | 参数                     | 说明        | 示例                                              |
+| ---------- | ------------------------ | ----------- | ------------------------------------------------- |
+| `username` | —                        | 随机用户名  | `${username}`                                     |
+| `password` | —                        | 随机密码    | `${password}`                                     |
+| `qqid`     | —                        | 随机 QQ 号  | `${qqid}`                                         |
+| `base64`   | `string`                 | Base64 编码 | `${base64:"test"}` → `dGVzdA==`                   |
+| `upper`    | `string`                 | 转大写      | `${upper:"hello"}` → `HELLO`                      |
+| `lower`    | `string`                 | 转小写      | `${lower:"HELLO"}` → `hello`                      |
+| `replace`  | `str`, `old`, `new`      | 全部替换    | `${replace:"a.b.c",".","-"}` → `a-b-c`            |
+| `substr`   | `str`, `start`\[, `len`] | 取子串      | `${substr:"abcdef",1,3}` → `bcd`                  |
+| `random`   | `type`, …                | 生成随机值  | `${random:chars,8}` <br> `${random:number,1,100}` |
 
 ---
 
-### `random` 函数详解
+### `random` 模式详解
 
-随机数据生成支持以下模式：
+- **`random:chars,length[,charset]`**
+  生成随机字符串（默认字符集 A–Z/a–z/0–9）。
+  例：`${random:chars,5}`、`${random:chars,4,"abc"}`
 
-1. **`random:chars,length[,charset]`**
+- **`random:number,max`**
+  生成 `0` 到 `max` 的整数（含）。
+  例：`${random:number,10}`
 
-   - 生成指定长度的随机字符串
-   - 可指定自定义字符集（默认为 `A-Za-z0-9`）
-   - 示例：
-
-     ```text
-     ${random:chars,8}          // 例如：aB3x9ZpQ
-     ${random:chars,5,"abc"}    // 例如：bacca
-     ```
-
-2. **`random:number,max`**
-
-   - 生成 `0 ~ max` 的随机整数（包含 max）
-   - 示例：
-
-     ```text
-     ${random:number,10}        // 例如：7
-     ```
-
-3. **`random:number,min,max`**
-
-   - 生成 `min ~ max` 的随机整数（包含 min 与 max）
-   - 示例：
-
-     ```text
-     ${random:number,100,200}   // 例如：153
-     ```
+- **`random:number,min,max`**
+  生成 `min` 到 `max` 的整数（含）。
+  例：`${random:number,100,200}`
 
 ---
 
-## 嵌套示例：组合多步操作
+## 嵌套与组合示例
 
 ```text
-${base64:${replace:${user},"@","_"}}
+${base64:${replace:${username},"@","_"}}
 ```
 
 解析顺序：
 
-1. `${user}` → 例如 `test@example.com`
-2. `${replace:"test@example.com","@","_"}` → `test_example.com`
-3. `${base64:"test_example.com"}` → `dGVzdF9leGFtcGxlLmNvbQ==`
+1. `${username}` → `Steve123`
+2. `${replace:"alice@example.com","@","_"}` → `alice_example.com`
+3. `${base64:"alice_example.com"}` → `YWxpY2VfZXhhbXBsZS5jb20=`
 
 ---

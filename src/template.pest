@@ -1,32 +1,45 @@
-// Define whitespace, which is ignored between rules unless specified otherwise
-WHITESPACE = _{ " " | "\t" }
+// template.pest
 
-// Top-level rule: matches the entire input string potentially containing expressions and static text
+// Template = sequence of static text or expressions until End Of Input
 template = { SOI ~ (expression | static_text)* ~ EOI }
 
-// An expression like ${func:arg1,"arg2",${nested}} or ${variable}
-// It starts with ${, has an identifier, optionally followed by : and arguments, and ends with }
-expression = { "${" ~ identifier ~ (":" ~ arguments)? ~ "}" }
+// Expression = ${ identifier [: arguments ] }
+// Allows ${fn}, ${fn:}, ${fn:arg1,...}
+expression = { "${" ~ identifier ~ arguments? ~ "}" }
 
-// Identifier for function or variable names (alphanumeric + underscore)
+// Arguments = : [ arg1 [, arg2, ...] ] (optional list after colon)
+// Allows the colon alone for zero arguments.
+arguments = { ":" ~ argument ~ ("," ~ argument)* }
+
+// Argument = Can be a nested expression, template string, string literal, number, or identifier (keyword)
+argument = { template_string
+          | string_literal
+          | number
+          | expression 
+          | identifier }
+
+// Backtick Template String - essential to make the closing backtick part of the rule
+template_string = ${ "`" ~ template_string_content* ~ "`" }
+
+// Content inside a template string can be expressions or literal text
+template_string_content = _{ expression | template_string_literal }
+
+// Literal text within a template string - any sequence not starting with ${ and not a backtick
+template_string_literal = { (!("${" | "`") ~ ANY)+ }
+
+// String Literal = " ... " (atomic)
+string_literal = @{ "\"" ~ string_inner* ~ "\"" }
+string_inner = _{ escape_sequence | !("\"" | "\\") ~ ANY }
+escape_sequence = _{ "\\" ~ ("\"" | "\\") }
+
+// Number Literal = sequence of digits (atomic)
+number = @{ ASCII_DIGIT+ }
+
+// Identifier = Function name or keyword (atomic)
 identifier = @{ (ASCII_ALPHANUMERIC | "_")+ }
 
-// List of arguments separated by commas
-// Allows optional whitespace around the comma
-arguments = { argument ~ ("," ~ argument)* }
+// Static Text = Any sequence of characters not starting an expression
+static_text = { (!"${" ~ ANY)+ }
 
-// An individual argument can be a string literal or another (potentially nested) expression
-argument = { string_literal | expression }
-
-// Static text is any sequence of characters not starting an expression `${`
-// Uses a negative lookahead `!{`
-static_text = @{ (!("${") ~ ANY)+ }
-
-// String literal enclosed in double quotes
-// Handles escaped quotes (\") and escaped backslashes (\\) within the string
-string_literal = @{ "\"" ~ inner_string ~ "\"" }
-inner_string = { (escape_sequence | !("\"" | "\\") ~ ANY)* }
-escape_sequence = { "\\" ~ ("\"" | "\\") }
-
-// Pest built-ins
-ASCII_ALPHANUMERIC = _{ 'a'..'z' | 'A'..'Z' | '0'..'9' }
+// Define silent whitespace (ignored between tokens where allowed by grammar structure)
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }

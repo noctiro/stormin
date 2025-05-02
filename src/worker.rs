@@ -1,10 +1,6 @@
 use crate::config::{AttackConfig, CompiledTarget};
-use crate::generator::{
-    password::PasswordGenerator, ChineseSocialPasswordGenerator, QQIDGenerator,
-    RandomPasswordGenerator, UsernameGenerator,
-};
 use crate::logger::Logger;
-use crate::template::render_compiled_url;
+use crate::template::render_ast_node;
 use crate::ui::ThreadStats;
 use crossbeam_channel::{Receiver, Sender};
 use rand::rngs::{SmallRng, ThreadRng};
@@ -52,10 +48,6 @@ pub async fn worker_loop(
 ) {
     // Use SmallRng seeded from thread-local entropy
     let mut rng = SmallRng::seed_from_u64(ThreadRng::default().random());
-    let mut username_gen = UsernameGenerator::new();
-    let mut pwd_gen_social = ChineseSocialPasswordGenerator::new();
-    let mut pwd_gen_rand = RandomPasswordGenerator::new();
-    let mut qqid_gen = QQIDGenerator::new();
     let mut requests = 0u64;
     let mut paused = false; // Track pause state locally
 
@@ -163,21 +155,6 @@ pub async fn worker_loop(
                             }
                         };
 
-                        // Generate credentials
-                        let needs_user = target.params.iter().any(|(_, c)| c.needs_user);
-                        let needs_pwd = target.params.iter().any(|(_, c)| c.needs_password);
-                        let needs_qq = target.params.iter().any(|(_, c)| c.needs_qqid);
-
-                        let username = needs_user.then(|| username_gen.generate_random());
-                        let password = needs_pwd.then(|| {
-                            if rng.random_bool(0.6) {
-                                pwd_gen_social.generate()
-                            } else {
-                                pwd_gen_rand.generate()
-                            }
-                        });
-                        let qqid = needs_qq.then(|| qqid_gen.generate_qq_id());
-
                         let method = match target.method.parse() {
                             Ok(m) => m,
                             Err(_) => {
@@ -197,12 +174,10 @@ pub async fn worker_loop(
                         // Render param values (which are CompiledUrl) into Strings
                         let mut params_vec: Vec<(String, String)> = Vec::new(); // Explicit type
                         for (key, template) in &target.params {
-                            let value_string = render_compiled_url(
+                            let value_string = render_ast_node(
                                 // Render CompiledUrl to String
                                 template,
-                                username.as_deref(),
-                                password.as_deref(),
-                                qqid.as_deref(),
+                                logger.clone(),
                             );
                             params_vec.push((key.clone(), value_string)); // Store the rendered String
                         }

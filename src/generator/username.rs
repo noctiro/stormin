@@ -1,6 +1,5 @@
-use rand::rngs::{SmallRng, ThreadRng};
-use rand::{Rng, SeedableRng};
-use std::fmt::Write; // Import the Write trait for efficient number formatting
+use rand::{Rng, RngCore};
+use std::fmt::Write;
 
 // ---------- Expanded Word Lists (Place the expanded lists from above here) ----------
 
@@ -31,70 +30,49 @@ const COMMON_SUFFIXES: &[&str] = &[
     "lily", "1234", "abc", "superman", "haha", "cool", "fun", "good",
 ];
 
+pub fn generate_username<T: RngCore>(rng: &mut T) -> String {
+    // Estimate capacity: Longest word (e.g., 8) + underscore (1) + longest suffix (e.g., 8) + digits (2) = ~19.
+    // Add some buffer. 32 seems reasonable.
+    let mut result = String::with_capacity(32);
 
-// ---------- Optimized UsernameGenerator ----------
-pub struct UsernameGenerator {
-    rng: SmallRng,
-    // Pre-calculate lengths to avoid calling .len() repeatedly inside the loop
-    words_len: usize,
-    suffixes_len: usize,
-}
-
-impl UsernameGenerator {
-    pub fn new() -> Self {
-        Self {
-            // SmallRng is fast. Seeding from entropy is a good default.
-            rng: SmallRng::seed_from_u64(ThreadRng::default().random()),
-            words_len: COMMON_WORDS.len(),
-            suffixes_len: COMMON_SUFFIXES.len(),
-        }
+    // --- 1. Select and append prefix ---
+    let prefix_word = COMMON_WORDS[rng.random_range(0..COMMON_WORDS.len())];
+    if rng.random_bool(0.5) { // 50% chance lowercase prefix
+        // Efficiently append lowercase version if needed
+        // Using write! might be slightly cleaner than push+to_ascii_lowercase loop
+        // write!(result, "{}", prefix_word.to_lowercase()).unwrap();
+        // Let's benchmark push+loop vs write! later if needed, push+loop is likely fine
+         for c in prefix_word.chars() {
+             result.push(c.to_ascii_lowercase());
+         }
+    } else {
+        result.push_str(prefix_word); // Append directly if no case change
     }
 
-    #[inline] // Suggest inlining for performance-critical code
-    pub fn generate_random(&mut self) -> String {
-        // Estimate capacity: Longest word (e.g., 8) + underscore (1) + longest suffix (e.g., 8) + digits (2) = ~19.
-        // Add some buffer. 32 seems reasonable.
-        let mut result = String::with_capacity(32);
+    // --- 2. Decide on separator ---
+    let add_underscore = rng.random_bool(0.3); // 30% chance of underscore
 
-        // --- 1. Select and append prefix ---
-        let prefix_word = COMMON_WORDS[self.rng.random_range(0..self.words_len)];
-        if self.rng.random_bool(0.5) { // 50% chance lowercase prefix
-            // Efficiently append lowercase version if needed
-            // Using write! might be slightly cleaner than push+to_ascii_lowercase loop
-            // write!(result, "{}", prefix_word.to_lowercase()).unwrap();
-            // Let's benchmark push+loop vs write! later if needed, push+loop is likely fine
-             for c in prefix_word.chars() {
-                 result.push(c.to_ascii_lowercase());
-             }
-        } else {
-            result.push_str(prefix_word); // Append directly if no case change
-        }
+    // --- 3. Select suffix base ---
+    let suffix_base = COMMON_SUFFIXES[rng.random_range(0..COMMON_SUFFIXES.len())];
 
-        // --- 2. Decide on separator ---
-        let add_underscore = self.rng.random_bool(0.3); // 30% chance of underscore
+    // --- 4. Decide on adding numbers to suffix ---
+    let add_suffix_digits = rng.random_bool(0.7); // 70% chance of adding digits
 
-        // --- 3. Select suffix base ---
-        let suffix_base = COMMON_SUFFIXES[self.rng.random_range(0..self.suffixes_len)];
-
-        // --- 4. Decide on adding numbers to suffix ---
-        let add_suffix_digits = self.rng.random_bool(0.7); // 70% chance of adding digits
-
-        // --- 5. Append separator (if needed) ---
-        if add_underscore {
-            result.push('_');
-        }
-
-        // --- 6. Append suffix base ---
-        result.push_str(suffix_base);
-
-        // --- 7. Append suffix digits (if needed) ---
-        if add_suffix_digits {
-            let suffix_num = self.rng.random_range(10..100);
-            // Use write! for efficient formatting directly into the String buffer
-            // write! returns a Result, unwrap is generally safe for basic types into String
-            write!(result, "{}", suffix_num).unwrap();
-        }
-
-        result // Return the efficiently built string
+    // --- 5. Append separator (if needed) ---
+    if add_underscore {
+        result.push('_');
     }
+
+    // --- 6. Append suffix base ---
+    result.push_str(suffix_base);
+
+    // --- 7. Append suffix digits (if needed) ---
+    if add_suffix_digits {
+        let suffix_num = rng.random_range(10..100);
+        // Use write! for efficient formatting directly into the String buffer
+        // write! returns a Result, unwrap is generally safe for basic types into String
+        write!(result, "{}", suffix_num).unwrap();
+    }
+
+    result // Return the efficiently built string
 }

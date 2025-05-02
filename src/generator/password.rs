@@ -1,9 +1,4 @@
-use rand::{Rng, SeedableRng};
-use rand::rngs::{SmallRng, ThreadRng};
-
-pub trait PasswordGenerator {
-    fn generate(&mut self) -> String;
-}
+use rand::{Rng, RngCore};
 
 // ---------- Chinese社工密码生成器 ----------
 const COMMON_SURNAMES: &[&str] = &[
@@ -31,97 +26,79 @@ const COMMON_GIVEN_NAMES: &[&str] = &[
     "chang", "zhaoyang", "xueqin", "chenyi", "jiahao", "haoyang", "lan", "liwei",
 ];
 
-pub struct ChineseSocialPasswordGenerator {
-    rng: SmallRng,
+// 全拼或者首字母
+fn pick_form<'a, T: RngCore>(s: &'a str, rng: &mut T) -> &'a str {
+    if rng.random_bool(0.5) { s } else { &s[0..1] }
 }
 
-impl ChineseSocialPasswordGenerator {
-    pub fn new() -> Self {
-        Self {
-            rng: SmallRng::seed_from_u64(ThreadRng::default().random()),
-        }
+fn generate_name<T: RngCore>(rng: &mut T) -> String {
+    let surname = COMMON_SURNAMES[rng.random_range(0..COMMON_SURNAMES.len())];
+    let name_len = match rng.random_range(0..10) {
+        0 => 2, 1 => 4, _ => 3,
+    };
+    let mut name = String::with_capacity(12);
+    name.push_str(pick_form(surname, rng));
+    for _ in 0..(name_len - 1) {
+        let ch = COMMON_GIVEN_NAMES[rng.random_range(0..COMMON_GIVEN_NAMES.len())];
+        name.push_str(pick_form(ch, rng));
     }
+    name
+}
 
-    fn pick_form<'a>(&mut self, s: &'a str) -> &'a str {
-        if self.rng.random_bool(0.5) { s } else { &s[0..1] }
-    }
+fn generate_birthday<T: RngCore>(rng: &mut T) -> String {
+    let year = rng.random_range(1970..=2010);
+    let month = rng.random_range(1..=12);
+    let day = rng.random_range(1..=28);
+    let full = format!("{:04}{:02}{:02}", year, month, day);
+    let short = &full[2..8];
+    let month_day = &full[4..8];
 
-    fn generate_name(&mut self) -> String {
-        let surname = COMMON_SURNAMES[self.rng.random_range(0..COMMON_SURNAMES.len())];
-        let name_len = match self.rng.random_range(0..10) {
-            0 => 2, 1 => 4, _ => 3,
-        };
-        let mut name = String::with_capacity(12);
-        name.push_str(self.pick_form(surname));
-        for _ in 0..(name_len - 1) {
-            let ch = COMMON_GIVEN_NAMES[self.rng.random_range(0..COMMON_GIVEN_NAMES.len())];
-            name.push_str(self.pick_form(ch));
-        }
-        name
-    }
-
-    fn generate_birthday(&mut self) -> String {
-        let year = self.rng.random_range(1970..=2010);
-        let month = self.rng.random_range(1..=12);
-        let day = self.rng.random_range(1..=28);
-        let full = format!("{:04}{:02}{:02}", year, month, day);
-        let short = &full[2..8];
-        let month_day = &full[4..8];
-
-        match self.rng.random_range(0..5) {
-            0 => "".to_string(),
-            1 => full,
-            2 => short.to_string(),
-            3 => month_day.to_string(),
-            _ => format!("{}{}", &short[0..2], &short[2..]),
-        }
+    match rng.random_range(0..5) {
+        0 => "".to_string(),
+        1 => full,
+        2 => short.to_string(),
+        3 => month_day.to_string(),
+        _ => format!("{}{}", &short[0..2], &short[2..]),
     }
 }
 
-impl PasswordGenerator for ChineseSocialPasswordGenerator {
-    fn generate(&mut self) -> String {
-        let name = self.generate_name();
-        let bday = self.generate_birthday();
-        if self.rng.random_bool(0.5) {
-            format!("{}{}", name, bday)
-        } else {
-            format!("{}{}", bday, name)
-        }
+fn generate_chinese_password<T: RngCore>(rng: &mut T) -> String {
+    let name = generate_name(rng);
+    let bday = generate_birthday(rng);
+    if rng.random_bool(0.5) {
+        format!("{}{}", name, bday)
+    } else {
+        format!("{}{}", bday, name)
     }
 }
 
 // ---------- 强密码生成器 ----------
-pub struct RandomPasswordGenerator {
-    rng: SmallRng,
-}
 
-impl RandomPasswordGenerator {
-    pub fn new() -> Self {
-        Self {
-            rng: SmallRng::seed_from_u64(ThreadRng::default().random()),
-        }
+fn generate_strong_password<T: RngCore>(rng: &mut T) -> String {
+    const LETTERS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const DIGITS: &[u8] = b"0123456789";
+    const SYMBOLS: &[u8] = b"!@#$%^&*_-";
+
+    let mut pool = Vec::with_capacity(80);
+    pool.extend_from_slice(LETTERS);
+    pool.extend_from_slice(DIGITS);
+    if rng.random_bool(0.05) {
+        pool.extend_from_slice(SYMBOLS);
     }
+
+    let len = rng.random_range(8..=16);
+    (0..len)
+        .map(|_| {
+            let idx = rng.random_range(0..pool.len());
+            pool[idx] as char
+        })
+        .collect()
 }
 
-impl PasswordGenerator for RandomPasswordGenerator {
-    fn generate(&mut self) -> String {
-        const LETTERS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        const DIGITS: &[u8] = b"0123456789";
-        const SYMBOLS: &[u8] = b"!@#$%^&*_-";
-
-        let mut pool = Vec::with_capacity(80);
-        pool.extend_from_slice(LETTERS);
-        pool.extend_from_slice(DIGITS);
-        if self.rng.random_bool(0.05) {
-            pool.extend_from_slice(SYMBOLS);
-        }
-
-        let len = self.rng.random_range(8..=16);
-        (0..len)
-            .map(|_| {
-                let idx = self.rng.random_range(0..pool.len());
-                pool[idx] as char
-            })
-            .collect()
+pub fn generate_password<T: RngCore>(rng: &mut T) -> String {
+    if rng.random_bool(0.5) {
+        generate_chinese_password(rng)
+    } else {
+        generate_strong_password(rng)
     }
 }

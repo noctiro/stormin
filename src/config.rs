@@ -15,13 +15,13 @@ struct TemplateParser;
 #[derive(Clone, Debug, PartialEq)]
 pub enum TemplateAstNode {
     Static(String),
-    Variable(String), // e.g., "user", "password", "qqid"
     FunctionCall {
         name: String,
         args: Vec<TemplateAstNode>,
     },
     // Represents the top-level sequence of nodes in a template
     Root(Vec<TemplateAstNode>),
+    TemplateString(Vec<TemplateAstNode>),
 }
 
 // --- Configuration Structs ---
@@ -129,16 +129,7 @@ pub struct CompiledTarget {
     pub url: String,
     pub method: String,
     pub headers: std::collections::HashMap<String, String>,
-    pub params: Vec<(String, CompiledUrl)>,
-}
-
-// Updated CompiledUrl to store the AST
-#[derive(Clone, Debug)]
-pub struct CompiledUrl {
-    pub ast: TemplateAstNode, // Changed from Vec<UrlPart>
-    pub needs_user: bool,
-    pub needs_password: bool,
-    pub needs_qqid: bool,
+    pub params: Vec<(String, TemplateAstNode)>,
 }
 
 // --- Parsing Logic ---
@@ -157,117 +148,73 @@ fn parse_template_string(input: &str) -> Result<TemplateAstNode, pest::error::Er
             pest::Span::new(input, 0, 0).unwrap(), // Span covering the beginning
         )
     })?;
-    Ok(build_ast_from_pair(top_pair))
+    Ok(build_ast_from_pair(top_pair)?)
 }
 
 // Recursively builds the AST from Pest parse pairs
-fn build_ast_from_pair(pair: pest::iterators::Pair<Rule>) -> TemplateAstNode {
+fn build_ast_from_pair(pair: pest::iterators::Pair<Rule>) -> Result<TemplateAstNode, pest::error::Error<Rule>> {
     match pair.as_rule() {
-        Rule::template => {
-            // The children of 'template' are the sequence of static text and expressions, plus EOI.
-            // Filter out the EOI rule before mapping.
-            TemplateAstNode::Root(
-                pair.into_inner()
-                    .filter(|p| p.as_rule() != Rule::EOI) // Ignore EOI
-                    .map(build_ast_from_pair)
-                    .collect(),
-            )
-        }
+        Rule::template => Ok(TemplateAstNode::Root(
+            pair.into_inner()
+                .filter(|p| p.as_rule() != Rule::EOI)
+                .map(build_ast_from_pair)
+                .collect::<Result<Vec<TemplateAstNode>, pest::error::Error<Rule>>>()?,
+        )),
+
         Rule::expression => {
             let mut inner_rules = pair.into_inner();
-            let identifier_pair = inner_rules.next().unwrap(); // identifier is guaranteed
+            let identifier_pair = inner_rules.next().unwrap(); // function or variable name
             let name = identifier_pair.as_str().to_string();
 
             if let Some(args_pair) = inner_rules.next() {
-                // Optional arguments part
-                // It's a function call
-                let args = args_pair
-                    .into_inner() // Go into 'arguments' rule -> 'argument'*
-                    .map(build_ast_from_pair) // Process each 'argument'
-                    .collect();
-                TemplateAstNode::FunctionCall { name, args }
+                let args = args_pair.into_inner().map(build_ast_from_pair).collect::<Result<Vec<TemplateAstNode>, pest::error::Error<Rule>>>()?;
+                Ok(TemplateAstNode::FunctionCall { name, args })
             } else {
-                // No arguments provided after identifier
-                // Treat user, password, qqid as parameter-less functions
-                match name.as_str() {
-                    "user" | "password" | "qqid" => TemplateAstNode::FunctionCall {
-                        name,
-                        args: Vec::new(), // Empty argument list
-                    },
-                    // Treat other identifiers without args as variables (or potentially error?)
-                    _ => TemplateAstNode::Variable(name),
-                }
+                // Support identifier without arguments: treat as function call with empty arguments
+                Ok(TemplateAstNode::FunctionCall {
+                    name,
+                    args: Vec::new(),
+                })
             }
-        }
-        Rule::argument => {
-            // An argument is either a string literal or a nested expression
-            // There will always be exactly one inner element for 'argument'
-            build_ast_from_pair(pair.into_inner().next().unwrap())
-        }
+        },
+
+        Rule::argument => build_ast_from_pair(pair.into_inner().next().unwrap()),
+
         Rule::string_literal => {
-            // Atomic rule: content is in pair.as_str() including quotes.
             let literal_str = pair.as_str();
-            // Remove surrounding quotes. Check length to prevent panic on empty/invalid literal.
             let content = if literal_str.len() >= 2 {
                 &literal_str[1..literal_str.len() - 1]
             } else {
-                "" // Or handle error appropriately
+                ""
             };
-            // Handle escapes
             let unescaped = content.replace("\\\"", "\"").replace("\\\\", "\\");
-            TemplateAstNode::Static(unescaped)
-        }
-        Rule::static_text => TemplateAstNode::Static(pair.as_str().to_string()),
-        // Rules like WHITESPACE, identifier, arguments, inner_string, escape_sequence, EOI, etc.
-        // are structural or atomic and don't directly map to AST nodes in this structure.
-        // We only handle the rules that define the structure we want in the AST.
+            Ok(TemplateAstNode::Static(unescaped))
+        },
+
+        Rule::static_text => Ok(TemplateAstNode::Static(pair.as_str().to_string())),
+        Rule::number => Ok(TemplateAstNode::Static(pair.as_str().to_string())),
+        Rule::identifier => Ok(TemplateAstNode::Static(pair.as_str().to_string())),
+
+        Rule::template_string => {
+            // Process backtick template string with potential nested expressions
+            let children: Vec<TemplateAstNode> = pair
+                .into_inner()
+                .map(build_ast_from_pair)
+                .collect::<Result<Vec<TemplateAstNode>, pest::error::Error<Rule>>>()?;
+            
+            Ok(TemplateAstNode::TemplateString(children))
+        },
+
+        Rule::template_string_literal => {
+            // Handle literal text parts in template strings
+            Ok(TemplateAstNode::Static(pair.as_str().to_string()))
+        },
+
         _ => unreachable!(
-            "Encountered unexpected rule: {:?} in build_ast_from_pair",
+            "Unexpected rule: {:?} in build_ast_from_pair",
             pair.as_rule()
         ),
     }
-}
-
-// Helper to determine required variables from the AST
-fn analyze_ast_needs(node: &TemplateAstNode) -> (bool, bool, bool) {
-    match node {
-        TemplateAstNode::Static(_) => (false, false, false),
-        TemplateAstNode::Variable(_) => (false, false, false), // Basic variables don't trigger flags anymore
-        TemplateAstNode::FunctionCall { name, args, .. } => {
-            // Check the function name itself
-            let self_needs = match name.as_str() {
-                "user" => (true, false, false),
-                "password" => (false, true, false),
-                "qqid" => (false, false, true),
-                _ => (false, false, false),
-            };
-            // Combine with needs from arguments
-            args.iter()
-                .map(analyze_ast_needs)
-                .fold(self_needs, |acc, needs| {
-                    (acc.0 || needs.0, acc.1 || needs.1, acc.2 || needs.2)
-                })
-        }
-        TemplateAstNode::Root(nodes) => nodes
-            .iter()
-            .map(analyze_ast_needs)
-            .fold((false, false, false), |acc, needs| {
-                (acc.0 || needs.0, acc.1 || needs.1, acc.2 || needs.2)
-            }),
-    }
-}
-
-// Updated function to use the new parser
-// Note the change in the Error type in the Result
-fn compile_url_template(template: String) -> Result<CompiledUrl, pest::error::Error<Rule>> {
-    let ast = parse_template_string(&template)?;
-    let (needs_user, needs_password, needs_qqid) = analyze_ast_needs(&ast);
-    Ok(CompiledUrl {
-        ast, // Store the AST directly
-        needs_user,
-        needs_password,
-        needs_qqid,
-    })
 }
 
 /// Loads configuration and compiles all targets
@@ -290,12 +237,12 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
         }
     }
 
-    let mut compiled = Vec::new();
+    let mut compiled: Vec<CompiledTarget> = Vec::new();
     for raw_t in raw.targets {
         let mut params = Vec::new();
         if let Some(map) = raw_t.params {
             for (k, v) in map {
-                params.push((k, compile_url_template(v)?));
+                params.push((k, parse_template_string(&v)?));
             }
         }
         compiled.push(CompiledTarget {
