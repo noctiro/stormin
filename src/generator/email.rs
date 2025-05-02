@@ -14,7 +14,6 @@ const COMMON_SERVER: &[&str] = &[
     "139.com", "189.cn", "wo.cn",
 ];
 
-
 pub fn generate_email<T: RngCore>(rng: &mut T) -> String {
     let username = username::generate_username(rng);
     let server = COMMON_SERVER[rng.random_range(0..COMMON_SERVER.len())];

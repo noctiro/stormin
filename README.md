@@ -6,6 +6,8 @@ Stormin 是一个拥有TUI界面的注册轰炸机，专门用于整治盗号网
 
 这个是一个练习项目，欢迎各位大佬的指导和 PR。
 
+盗号网站贡献与配置分享 -> [Discussions #1](https://github.com/Noctiro/stormin/discussions/1)
+
 ## 配置文件说明
 
 Stormin 使用 TOML 格式的配置文件来定义请求目标和参数。配置文件名为 `config.toml` ，可以参考项目的默认配置文件 `example.config.toml`。
@@ -41,3 +43,7 @@ params = { sv = "${base64:${base64:${password}}}" }
 - `P`: 暂停
 - `R`: 恢复
 - `Q`: 退出
+
+## 免责声明
+
+本项目仅用于技术学习与安全研究目的，**严禁用于非法用途**。使用本工具造成的任何后果由使用者自行承担。
