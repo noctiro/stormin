@@ -1,9 +1,9 @@
-use rand::{Rng, RngCore};
+use rand::RngCore;
 use std::fmt::Write;
 
 // ---------- Expanded Word Lists (Place the expanded lists from above here) ----------
 
-const COMMON_WORDS: &[&str] = &[
+static COMMON_WORDS: &[&str] = &[
     "master", "ninja", "shadow", "agent", "alpha", "omega", "delta", "sigma", "gamma", "epic",
     "legend", "mythic", "cyber", "tech", "code", "hacker", "dev", "admin", "user", "player",
     "ghost", "viper", "eagle", "lion", "tiger", "wolf", "dragon", "phoenix", "wizard", "sorcerer",
@@ -18,7 +18,7 @@ const COMMON_WORDS: &[&str] = &[
     "power", "king", "queen", "hero", "champ", "fun", "best", "peace", "fire",
 ];
 
-const COMMON_SUFFIXES: &[&str] = &[
+static COMMON_SUFFIXES: &[&str] = &[
     "x", "z", "gg", "wp", "ez", "xd", "lol", "rofl", "lmao", "brb", "afk", "btw", "fyi",
     "pro", "noob", "bot", "ai", "exe", "dll", "sys", "io", "dev", "ops", "sec", "net", "org",
     "com", "app", "xyz", "online", "live", "now", "go", "run", "fly", "win", "lost", "found",
@@ -30,49 +30,60 @@ const COMMON_SUFFIXES: &[&str] = &[
     "lily", "1234", "abc", "superman", "haha", "cool", "fun", "good",
 ];
 
+static POOL_LETTERS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+static POOL_DIGITS: &[u8] = b"0123456789";
+static POOL_SYMBOLS: &[u8] = b"!@#$%^&*_-";
+
 pub fn generate_username<T: RngCore>(rng: &mut T) -> String {
-    // Estimate capacity: Longest word (e.g., 8) + underscore (1) + longest suffix (e.g., 8) + digits (2) = ~19.
-    // Add some buffer. 32 seems reasonable.
+    // Allocate with reasonable capacity once
     let mut result = String::with_capacity(32);
-
-    // --- 1. Select and append prefix ---
-    let prefix_word = COMMON_WORDS[rng.random_range(0..COMMON_WORDS.len())];
-    if rng.random_bool(0.5) { // 50% chance lowercase prefix
-        // Efficiently append lowercase version if needed
-        // Using write! might be slightly cleaner than push+to_ascii_lowercase loop
-        // write!(result, "{}", prefix_word.to_lowercase()).unwrap();
-        // Let's benchmark push+loop vs write! later if needed, push+loop is likely fine
-         for c in prefix_word.chars() {
-             result.push(c.to_ascii_lowercase());
-         }
+    
+    // Generate a single u64 and extract multiple random choices from it
+    // This reduces the number of calls to the RNG
+    let random_bits = rng.next_u64();
+    
+    // Use the bits to make our decisions
+    // Extract bits 0-15 for word index (16 bits can represent 0-65535)
+    let word_idx = (random_bits & 0xFFFF) as usize % COMMON_WORDS.len();
+    let prefix_word = COMMON_WORDS[word_idx];
+    
+    // Use bit 16 for lowercase decision
+    let lowercase_prefix = (random_bits & (1 << 16)) != 0;
+    
+    // Use bit 17 for underscore decision
+    let add_underscore = (random_bits & (1 << 17)) != 0;
+    
+    // Extract bits 18-33 for suffix index
+    let suffix_idx = ((random_bits >> 18) & 0xFFFF) as usize % COMMON_SUFFIXES.len();
+    let suffix_base = COMMON_SUFFIXES[suffix_idx];
+    
+    // Use bit 34 for digits decision
+    let add_suffix_digits = (random_bits & (1 << 34)) != 0;
+    
+    // Generate suffix number (bits 35-44, giving us 0-1023)
+    // We'll scale it to 10-99 range
+    let suffix_num = 10 + ((random_bits >> 35) & 0x3FF) % 90;
+    
+    // Now build the string with minimal allocations
+    if lowercase_prefix {
+        // Lowercase version
+        for c in prefix_word.chars() {
+            result.push(c.to_ascii_lowercase());
+        }
     } else {
-        result.push_str(prefix_word); // Append directly if no case change
+        // Original case
+        result.push_str(prefix_word);
     }
-
-    // --- 2. Decide on separator ---
-    let add_underscore = rng.random_bool(0.3); // 30% chance of underscore
-
-    // --- 3. Select suffix base ---
-    let suffix_base = COMMON_SUFFIXES[rng.random_range(0..COMMON_SUFFIXES.len())];
-
-    // --- 4. Decide on adding numbers to suffix ---
-    let add_suffix_digits = rng.random_bool(0.7); // 70% chance of adding digits
-
-    // --- 5. Append separator (if needed) ---
+    
     if add_underscore {
         result.push('_');
     }
-
-    // --- 6. Append suffix base ---
+    
     result.push_str(suffix_base);
-
-    // --- 7. Append suffix digits (if needed) ---
+    
     if add_suffix_digits {
-        let suffix_num = rng.random_range(10..100);
-        // Use write! for efficient formatting directly into the String buffer
-        // write! returns a Result, unwrap is generally safe for basic types into String
         write!(result, "{}", suffix_num).unwrap();
     }
-
-    result // Return the efficiently built string
+    
+    result
 }

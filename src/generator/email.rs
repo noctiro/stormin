@@ -1,7 +1,7 @@
 use super::username;
 use rand::{Rng, RngCore};
 
-const COMMON_SERVER: &[&str] = &[
+static COMMON_SERVER: &[&str] = &[
     // Global
     "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com", "aol.com",
     "icloud.com", "mail.com", "protonmail.com", "zoho.com", "gmx.com", "yandex.com", "msn.com", "me.com",
