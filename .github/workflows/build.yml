@@ -134,7 +134,7 @@ jobs:
           sha256sum SHA256SUMS > SHA256SUMS.sha256
 
       - name: Upload combined artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: all-binaries
           path: dist/
