@@ -23,7 +23,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
             ext: .exe
-          - name: windows-i686
+          - os: windows-i686
             runner: windows-latest
             target: i686-pc-windows-msvc
             ext: .exe
