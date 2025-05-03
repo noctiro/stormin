@@ -30,6 +30,7 @@ pub enum TemplateAstNode {
 pub struct RawConfig {
     pub proxy_file: Option<String>,
     pub threads: Option<usize>,
+    pub timeout: Option<u64>,
     #[serde(rename = "Target")]
     pub targets: Vec<RawTarget>,
 }
@@ -120,6 +121,7 @@ impl ProxyConfig {
 #[derive(Clone, Debug)]
 pub struct AttackConfig {
     pub threads: usize,
+    pub timeout: u64,
     pub targets: Vec<CompiledTarget>,
     pub proxies: Vec<ProxyConfig>, // 类型改为 ProxyConfig
 }
@@ -265,6 +267,15 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
             * 4
     };
 
+    let timeout = if let Some(t) = raw.timeout {
+        if t <= 0 {
+            return Err("Config error: timeout must be at least 0".into());
+        }
+        t
+    } else {
+        5
+    };
+
     let mut compiled: Vec<CompiledTarget> = Vec::new();
     for raw_t in raw.targets {
         let mut params = Vec::new();
@@ -283,6 +294,7 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
 
     Ok(AttackConfig {
         threads,
+        timeout,
         targets: compiled,
         proxies,
     })

@@ -1,5 +1,6 @@
+use tokio::sync::mpsc::Sender;
+
 use crate::ui::DebugInfo;
-use crossbeam_channel::Sender;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -57,9 +58,9 @@ impl Logger {
             timestamp: Instant::now(),
             message,
         };
-        if let Err(e) = self.sender.send(debug_info) {
-            // Fallback to stderr if the channel is closed
-            eprintln!("Failed to send log message: {}", e);
+        // Use try_send for non-blocking send from potentially sync contexts
+        if let Err(e) = self.sender.try_send(debug_info) {
+            eprintln!("Failed to send log message (channel closed or full): {}", e);
         }
     }
 }

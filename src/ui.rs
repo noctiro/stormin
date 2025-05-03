@@ -256,30 +256,41 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
         f.render_widget(success, counters[1]);
         f.render_widget(failure, counters[2]);
 
-        // 请求统计图表
-        let requests_chart_data = stats
+        // 请求统计图表 - Total Requests per Target
+        // 1. Collect target names into owned Strings to manage lifetime
+        let target_names: Vec<String> = stats
             .targets
             .iter()
             .map(|t| {
-                let total = t.success + t.failure;
-                let name = t.url.split('/').last().unwrap_or(&t.url);
-                (name, total as u64)
+                // Extract the last part of the URL or use the full URL
+                t.url.split('/').last().unwrap_or(&t.url).to_string()
             })
-            .collect::<Vec<_>>();
+            .collect();
 
+        // 2. Create the data tuples using references to the owned Strings
+        let chart_data_tuples: Vec<(&str, u64)> = target_names
+            .iter()
+            .zip(stats.targets.iter())
+            .map(|(name, t)| (name.as_str(), t.success + t.failure)) // Use name.as_str()
+            .collect();
+
+        // 3. Modify the BarChart call
         let barchart = BarChart::default()
             .block(
                 Block::default()
-                    .title("Requests by Target")
+                    // Update title to reflect the new data
+                    .title("Total Requests by Target")
                     .borders(Borders::ALL),
             )
-            .data(&requests_chart_data)
-            .bar_width(5)
-            .bar_gap(3)
+            // Pass the data as a slice of tuples
+            .data(chart_data_tuples.as_slice())
+            .bar_width(5) // Can adjust width now, maybe wider bars
+            .bar_gap(1)
+            // Set a single style for all bars in this single group
             .bar_style(Style::default().fg(Color::Blue))
             .value_style(
                 Style::default()
-                    .fg(Color::White)
+                    .fg(Color::White) // Style for values shown under bars
                     .add_modifier(Modifier::BOLD),
             );
         f.render_widget(barchart, chunks[3]);

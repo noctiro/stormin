@@ -3,7 +3,6 @@ use crate::logger::Logger;
 use crate::ui::DebugInfo;
 use crate::ui::{self, draw_ui, RunningState, Stats, TargetStats, ThreadStats};
 use crate::worker::{worker_loop, RequestResult, TargetUpdate, WorkerMessage};
-use crossbeam_channel::{unbounded, Receiver, Sender};
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEventKind,
@@ -12,12 +11,13 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
+use tokio::sync::{broadcast, mpsc};
 use std::{
     collections::VecDeque,
     error::Error,
     io::{self, Stdout},
-    sync::atomic::{AtomicBool, Ordering}, // Import Arc
-    thread,                               // Add missing use
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
     time::{Duration, Instant},
 };
 use sysinfo::System;
@@ -29,16 +29,18 @@ pub struct App {
     logger: Logger,
     terminal: Terminal<CrosstermBackend<Stdout>>,
     // Channels
-    task_tx: Sender<WorkerMessage>,
-    task_rx: Receiver<WorkerMessage>,
-    stat_tx: Sender<RequestResult>,
-    stat_rx: Receiver<RequestResult>,
-    thread_stats_tx: Sender<ThreadStats>,
-    thread_stats_rx: Receiver<ThreadStats>,
-    target_stats_tx: Sender<TargetUpdate>,
-    target_stats_rx: Receiver<TargetUpdate>,
-    // log_tx: Sender<DebugInfo>, // Removed unused field
-    log_rx: Receiver<DebugInfo>,
+    // Use broadcast::Sender for task control
+    task_tx: broadcast::Sender<WorkerMessage>,
+    // task_rx removed, workers subscribe directly
+    stat_tx: mpsc::Sender<RequestResult>,
+    stat_rx: mpsc::Receiver<RequestResult>,
+    thread_stats_tx: mpsc::Sender<ThreadStats>,
+    thread_stats_rx: mpsc::Receiver<ThreadStats>,
+    target_stats_tx: mpsc::Sender<TargetUpdate>,
+    target_stats_rx: mpsc::Receiver<TargetUpdate>,
+    // log_tx: Sender<DebugInfo>, // Removed unused field (held by logger)
+    // Receiver is Option because it's taken by spawn_log_receiver
+    log_rx: Option<mpsc::Receiver<DebugInfo>>,
     // Removed pause_tx, pause_rx
     // Threads
     worker_handles: Vec<JoinHandle<()>>, // Tokio JoinHandle
@@ -59,11 +61,11 @@ impl App {
         let terminal = Terminal::new(backend)?;
 
         // Create Channels
-        let (task_tx, task_rx) = unbounded();
-        let (stat_tx, stat_rx) = unbounded();
-        let (thread_stats_tx, thread_stats_rx) = unbounded();
-        let (target_stats_tx, target_stats_rx) = unbounded();
-        let (log_tx, log_rx) = unbounded::<DebugInfo>();
+        let (task_tx, _) = broadcast::channel(32);
+        let (stat_tx, stat_rx) = mpsc::channel(32);
+        let (thread_stats_tx, thread_stats_rx) = mpsc::channel(32);
+        let (target_stats_tx, target_stats_rx) = mpsc::channel(32);
+        let (log_tx, log_rx) = mpsc::channel(32);
         // Removed pause_tx, pause_rx creation
 
         // Create Logger
@@ -103,15 +105,15 @@ impl App {
             logger,
             terminal,
             task_tx,
-            task_rx,
+            // task_rx removed
             stat_tx,
             stat_rx,
             thread_stats_tx,
             thread_stats_rx,
             target_stats_tx,
             target_stats_rx,
-            // log_tx, // Removed from initialization
-            log_rx,
+            // log_tx, // Removed from initialization (held by logger)
+            log_rx: Some(log_rx), // Wrap receiver in Option
             // Removed pause_tx, pause_rx
             worker_handles: Vec::new(),
             // Removed task_sender_handle
@@ -125,7 +127,8 @@ impl App {
             self.config.threads
         ));
         for _ in 0..self.config.threads {
-            let rx = self.task_rx.clone();
+            // Subscribe to the broadcast channel for task messages
+            let rx = self.task_tx.subscribe();
             let tx = self.stat_tx.clone();
             let cfg = self.config.clone();
             let thread_stats_tx = self.thread_stats_tx.clone();
@@ -154,10 +157,15 @@ impl App {
 
     pub fn spawn_log_receiver(&mut self) {
         self.logger.info("Spawning log receiver thread...");
-        let log_rx = self.log_rx.clone();
+        // Take the receiver from the Option, panicking if it's already taken
+        let mut log_rx = self.log_rx.take().expect("Log receiver already taken or not initialized");
         let debug_logs_tx = self.target_stats_tx.clone(); // Use target channel for UI updates
+        let logger_clone = self.logger.clone(); // Clone logger for use in the thread
+
         let handle = thread::spawn(move || {
-            while let Ok(log_entry) = log_rx.recv() {
+             logger_clone.info("Log receiver thread started.");
+            // Use blocking_recv on the tokio mpsc channel inside the std::thread
+            while let Some(log_entry) = log_rx.blocking_recv() {
                 // Convert log entry to a TargetUpdate for the UI
                 let update = TargetUpdate {
                     url: String::new(), // Use empty URL to signify a log entry
@@ -165,10 +173,12 @@ impl App {
                     timestamp: log_entry.timestamp,
                     debug: Some(log_entry.message),
                 };
-                if debug_logs_tx.send(update).is_err() {
-                    // If UI channel fails, UI might have closed, exit receiver loop
-                    eprintln!("Log receiver failed to send to UI, exiting.");
-                    break;
+                 // Send to the target stats channel (which handles UI debug log updates)
+                // Use blocking send here as this thread is dedicated to logging
+                if debug_logs_tx.blocking_send(update).is_err() {
+                    // Use eprintln as logger might be involved in shutdown
+                    eprintln!("Log receiver failed to send to UI channel, exiting.");
+                    break; // Exit if the UI channel is closed
                 }
             }
             eprintln!("Log receiver thread loop finished."); // Added log for exit
@@ -352,12 +362,11 @@ impl App {
 
             // --- Send Tasks to Workers ---
             if self.stats.running_state == RunningState::Running {
-                // Send one task message per loop iteration when running.
-                // Workers will pick these up via the shared channel.
-                // Ignore error if channel is full or disconnected (e.g., during shutdown)
-                let _ = self.task_tx.try_send(WorkerMessage::Task);
-                // Note: Consider if sending more tasks or batching is needed for performance,
-                // but this simple approach should unblock the workers.
+                // Send Task via broadcast. Ignore result (number of receivers).
+                // Error occurs only if there are no receivers.
+                if let Err(e) = self.task_tx.send(WorkerMessage::Task) {
+                     self.logger.warning(&format!("Failed to broadcast Task message: {}", e));
+                }
             }
 
             // --- Draw UI ---
@@ -400,10 +409,10 @@ impl App {
         for i in 0..self.worker_handles.len() {
             // Use index for logging
             // Log errors, channel might be closed if workers finished early
-            if let Err(e) = self.task_tx.try_send(WorkerMessage::Stop) {
-                // Use try_send
+            // Use send for broadcast, ignore Ok result (receiver count)
+            if let Err(e) = self.task_tx.send(WorkerMessage::Stop) {
                 self.logger.warning(&format!(
-                    "Failed to send Stop message to worker {} from run: {}",
+                    "Failed to broadcast Stop message to worker {} from run: {}",
                     i, e
                 )); // Log warning on failure
             }
@@ -450,10 +459,9 @@ impl Drop for App {
             self.logger
                 .warning("App dropped unexpectedly, attempting shutdown and cleanup.");
             // Send stop signals if workers might still be running
-            for _ in 0..self.worker_handles.len() {
-                // Attempt to send Stop, use try_send and ignore error as channel might be closed/full
-                let _ = self.task_tx.try_send(WorkerMessage::Stop);
-            }
+            // Send stop signals if workers might still be running
+            // Use send for broadcast, ignore result/error in drop
+            let _ = self.task_tx.send(WorkerMessage::Stop);
             // self.shutdown(); // shutdown() is removed
             self.logger
                 .warning("App dropped unexpectedly. Cleanup attempted."); // Simplified warning

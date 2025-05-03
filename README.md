@@ -1,6 +1,6 @@
 # Stormin
 
-Stormin 是一个拥有TUI界面的注册轰炸机，专门用于整治盗号网站。
+Stormin 是一个拥有 TUI 界面的注册轰炸机，专门用于整治盗号网站。
 
 通过内置的模板语法，支持生成大量的各类虚假账号信息来进行轰炸。
 
@@ -19,6 +19,7 @@ Stormin 使用 TOML 格式的文件来配置程序。配置文件名为 `config.
 ```toml
 threads = 16                # 线程数 推荐 CPU 核数 * 4
 proxy_file = "proxies.txt"  # 代理文件路径（可选）
+timeout = 5                 # 超时时间，单位秒
 
 [[Target]]                  # 定义第一个目标
 url = "http://example.com"  # 目标URL

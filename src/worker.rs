@@ -2,15 +2,17 @@ use crate::config::AttackConfig;
 use crate::logger::Logger;
 use crate::template::render_ast_node;
 use crate::ui::ThreadStats;
-use crossbeam_channel::{Receiver, Sender};
 use rand::rngs::{SmallRng, ThreadRng};
 use rand::seq::IndexedRandom;
 use rand::{Rng, SeedableRng};
 use reqwest::{Client, Method};
+use std::thread::ThreadId;
 use std::{
-    thread::ThreadId,
+    mem, // Import mem
     time::{Duration, Instant},
 };
+// Use broadcast receiver for control messages
+use tokio::sync::{broadcast, mpsc::Sender};
 use tokio::time::sleep;
 
 #[derive(Debug, Clone, Copy)]
@@ -19,6 +21,7 @@ pub enum RequestResult {
     Failure,
 }
 
+// WorkerMessage remains the same, but will be sent over broadcast channel
 #[derive(Debug, Clone, Copy)]
 pub enum WorkerMessage {
     Task,
@@ -27,7 +30,7 @@ pub enum WorkerMessage {
     Stop,
 }
 
-// 目标统计通道
+// TargetUpdate remains the same
 #[derive(Debug)]
 pub struct TargetUpdate {
     pub url: String,
@@ -36,11 +39,10 @@ pub struct TargetUpdate {
     pub debug: Option<String>,
 }
 
-// 创建一个预分配缓冲区结构体以重用内存
+// RequestBuffer remains the same
 struct RequestBuffer {
     params_vec: Vec<(String, String)>,
     debug_info: String,
-    response_info: String,
 }
 
 impl RequestBuffer {
@@ -48,44 +50,41 @@ impl RequestBuffer {
         Self {
             params_vec: Vec::with_capacity(capacity),
             debug_info: String::with_capacity(1024),
-            response_info: String::with_capacity(1024),
         }
     }
 
     fn clear(&mut self) {
         self.params_vec.clear();
         self.debug_info.clear();
-        self.response_info.clear();
     }
 }
 
 pub async fn worker_loop(
-    rx: Receiver<WorkerMessage>,
+    // Change receiver type to broadcast::Receiver
+    mut rx: broadcast::Receiver<WorkerMessage>,
     config: AttackConfig,
-    tx: Sender<RequestResult>,
+    // stat_tx remains mpsc::Sender
+    stat_tx: Sender<RequestResult>,
     thread_id: ThreadId,
     thread_stats_tx: Sender<ThreadStats>,
     target_stats_tx: Sender<TargetUpdate>,
     logger: Logger,
 ) {
-    // 使用固定大小预分配的缓冲区
     let mut buffer = RequestBuffer::new(16);
 
-    // 使用SmallRng提高性能
     let mut rng = SmallRng::seed_from_u64(ThreadRng::default().random());
-    let mut requests = 0u64;
     let mut paused = false;
-
-    // 预先计算睡眠时间以避免重复创建Duration对象
     let loop_sleep_duration = Duration::from_millis(10);
-
-    // 预先选择代理，避免每次请求时重新选择
     let proxy_config = config.proxies.choose(&mut rng).cloned();
 
-    // 构建HTTP客户端，增加连接池配置
     let client_builder = Client::builder()
-        .pool_max_idle_per_host(10) // 增加连接池大小
-        .tcp_keepalive(Some(Duration::from_secs(30))); // 保持TCP连接活跃
+        .pool_max_idle_per_host(10)
+        .tcp_keepalive(Some(Duration::from_secs(30)))
+        .timeout(Duration::from_secs(config.timeout));
+
+    let stats_update_interval = Duration::from_millis(500);
+    let mut last_stats_update = Instant::now();
+    let mut requests = 0u64;
 
     let client = match proxy_config {
         Some(proxy) => {
@@ -104,7 +103,6 @@ pub async fn worker_loop(
                         "Worker {:?}: Failed to create proxy object from {}, falling back: {}",
                         thread_id, proxy.raw, e
                     ));
-                    // 出错时不使用代理构建
                     Client::builder()
                         .pool_max_idle_per_host(10)
                         .tcp_keepalive(Some(Duration::from_secs(30)))
@@ -112,13 +110,9 @@ pub async fn worker_loop(
                 }
             }
         }
-        None => {
-            // 不需要代理时的构建
-            client_builder.build()
-        }
+        None => client_builder.build(),
     }
     .unwrap_or_else(|e| {
-        // 构建失败时的后备客户端
         logger.error(&format!(
             "Worker {:?}: Failed to build client, falling back to default: {}",
             thread_id, e
@@ -126,21 +120,16 @@ pub async fn worker_loop(
         Client::new()
     });
 
-    // 缓存HTTP方法字符串到Method枚举的映射，避免重复解析
     let method_get = Method::GET;
     let method_post = Method::POST;
     let method_put = Method::PUT;
     let method_delete = Method::DELETE;
     let method_patch = Method::PATCH;
 
-    let mut last_stats_update = Instant::now();
-    let stats_update_interval = Duration::from_millis(500); // 限制状态更新频率
-
-    // 主循环
     'main_loop: loop {
-        // 先处理暂停状态
         while paused {
-            match rx.try_recv() {
+            // Use broadcast receiver's recv
+            match rx.recv().await {
                 Ok(WorkerMessage::Resume) => {
                     logger.info(&format!("Worker {:?} resuming...", thread_id));
                     paused = false;
@@ -149,22 +138,31 @@ pub async fn worker_loop(
                     logger.info(&format!("Worker {:?} stopping while paused...", thread_id));
                     return;
                 }
-                Ok(_) => {} // 忽略暂停时的其他消息
-                Err(crossbeam_channel::TryRecvError::Empty) => {
-                    sleep(loop_sleep_duration).await;
-                }
-                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                Ok(_) => { /* Ignore other messages like Task while paused */ }
+                // Handle channel closed
+                Err(broadcast::error::RecvError::Closed) => {
                     logger.warning(&format!(
                         "Worker {:?} channel disconnected while paused, exiting.",
                         thread_id
                     ));
                     return;
                 }
+                // Handle lagged receiver (missed messages)
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    logger.warning(&format!(
+                        "Worker {:?} lagged by {} messages while paused.",
+                        thread_id, n
+                    ));
+                    // Decide how to handle lag, e.g., continue or exit
+                    // For now, just log and continue waiting for Resume/Stop
+                }
             }
+            // Add a small sleep to prevent busy-waiting in the paused loop
+            sleep(loop_sleep_duration).await;
         }
 
-        // 非暂停状态下处理消息
-        match rx.try_recv() {
+        // Use broadcast receiver's recv
+        match rx.recv().await {
             Ok(msg) => {
                 match msg {
                     WorkerMessage::Stop => {
@@ -174,13 +172,10 @@ pub async fn worker_loop(
                     WorkerMessage::Pause => {
                         logger.info(&format!("Worker {:?} pausing...", thread_id));
                         paused = true;
-                        continue;
+                        continue; // Go back to the start of 'main_loop to enter the paused state
                     }
                     WorkerMessage::Task => {
-                        // 执行请求任务
                         requests += 1;
-
-                        // 选择目标
                         let target = match config.targets.choose(&mut rng) {
                             Some(t) => t,
                             None => {
@@ -192,38 +187,32 @@ pub async fn worker_loop(
                             }
                         };
 
-                        // 使用缓存的Method枚举减少解析
-                        let method = match target.method.to_uppercase().as_str() {
+                        let method_str = target.method.to_uppercase(); // Do uppercase once
+                        let method = match method_str.as_str() {
+                            // Match on &str
                             "GET" => &method_get,
                             "POST" => &method_post,
                             "PUT" => &method_put,
                             "DELETE" => &method_delete,
                             "PATCH" => &method_patch,
                             _ => {
-                                logger.error(&format!("Worker {:?}: Invalid HTTP method '{}' for target {}, skipping.", 
+                                logger.error(&format!("Worker {:?}: Invalid HTTP method '{}' for target {}, skipping.",
                                     thread_id, target.method, target.url));
                                 continue;
                             }
                         };
 
-                        // 构建请求
                         let mut req = client.request(method.clone(), &target.url);
-
-                        // 添加头信息
                         for (key, value) in &target.headers {
                             req = req.header(key, value);
                         }
 
-                        // 清除并重用上一次的缓冲区
-                        buffer.clear();
-
-                        // 渲染参数值
+                        buffer.clear(); // Clears params_vec and debug_info
                         for (key, template) in &target.params {
                             let value_string = render_ast_node(template, logger.clone());
                             buffer.params_vec.push((key.clone(), value_string));
                         }
 
-                        // 根据方法应用参数
                         match *method {
                             Method::GET | Method::DELETE => {
                                 req = req.query(&buffer.params_vec);
@@ -232,13 +221,29 @@ pub async fn worker_loop(
                                 req = req.form(&buffer.params_vec);
                             }
                             _ => {
+                                // This case should technically not be reachable due to the match above
                                 logger.warning(&format!(
-                                    "Worker {:?}: Unsupported method {} for params/body, sending without.", 
+                                    "Worker {:?}: Unsupported method {} for params/body, sending without.",
                                     thread_id, target.method));
                             }
                         }
 
-                        // 构建调试信息字符串
+                        let request_start = Instant::now();
+                        let res = req.send().await;
+                        let request_duration = request_start.elapsed();
+
+                        let success = res
+                            .as_ref()
+                            .map(|r| r.status().is_success())
+                            .unwrap_or(false);
+
+                        // Build combined debug info string directly into buffer.debug_info
+                        // buffer.debug_info is already cleared by buffer.clear()
+                        buffer.debug_info.push_str("[Request]\nURL: ");
+                        buffer.debug_info.push_str(&target.url);
+                        buffer.debug_info.push_str("\nMethod: ");
+                        buffer.debug_info.push_str(&target.method); // Use original case method for logging
+                        buffer.debug_info.push_str("\nParams: ");
                         for (i, (key, value)) in buffer.params_vec.iter().enumerate() {
                             if i > 0 {
                                 buffer.debug_info.push_str("&");
@@ -247,78 +252,52 @@ pub async fn worker_loop(
                             buffer.debug_info.push_str("=");
                             buffer.debug_info.push_str(value);
                         }
+                        buffer.debug_info.push_str("\n"); // Separator
 
-                        // 添加URL和方法信息
-                        let url_str = &target.url;
-                        let method_str = &target.method;
-
-                        // 直接写入预分配的缓冲区而不是创建新字符串
-                        buffer.debug_info = format!(
-                            "[Request]\nURL: {}\nMethod: {}\nParams: {}",
-                            url_str, method_str, buffer.debug_info
-                        );
-
-                        // 发送目标更新
-                        let _ = target_stats_tx.send(TargetUpdate {
-                            url: url_str.clone(),
-                            success: false,
-                            timestamp: Instant::now(),
-                            debug: Some(buffer.debug_info.clone()),
-                        });
-
-                        // 异步发送请求
-                        let request_start = Instant::now();
-                        let res = req.send().await;
-                        let request_duration = request_start.elapsed();
-
-                        // 处理结果
-                        let success = res
-                            .as_ref()
-                            .map(|r| r.status().is_success())
-                            .unwrap_or(false);
-
-                        // 构建响应信息
+                        // Append response info
                         match &res {
                             Ok(r) => {
                                 let status = r.status();
-                                buffer.response_info = format!(
+                                // Use format_args! with write! macro for potentially better performance if needed,
+                                // but format! into a temporary string is usually fine here.
+                                let response_str = format!(
                                     "[Response]\nStatus: {} {}\nTime: {:.2}ms",
                                     status.as_u16(),
                                     status.canonical_reason().unwrap_or("Unknown"),
                                     request_duration.as_secs_f64() * 1000.0
                                 );
+                                buffer.debug_info.push_str(&response_str);
                             }
                             Err(e) => {
-                                buffer.response_info = format!("[Error]\n{}", e);
+                                // Similar optimization potential for formatting if needed
+                                let error_str = format!("[Error]\n{}", e);
+                                buffer.debug_info.push_str(&error_str);
                             }
                         }
 
-                        // 发送目标更新
-                        let _ = target_stats_tx.send(TargetUpdate {
-                            url: url_str.clone(),
+                        // Send ONE TargetUpdate with final result and combined debug info
+                        // Use mem::take to avoid cloning the debug_info string
+                        let _ = target_stats_tx.try_send(TargetUpdate {
+                            url: target.url.clone(), // URL clone is likely still necessary
                             success,
-                            timestamp: Instant::now(),
-                            debug: Some(buffer.response_info.clone()),
+                            timestamp: Instant::now(), // Use timestamp after request completion
+                            // Take ownership of the string from the buffer
+                            debug: Some(mem::take(&mut buffer.debug_info)),
                         });
+                        // buffer.debug_info is now empty
 
-                        // 发送结果统计
-                        let result_msg = if success {
+                        // Send overall success/failure via stat_tx (remains the same)
+                        let _ = stat_tx.try_send(if success {
+                            // Use try_send
                             RequestResult::Success
                         } else {
                             RequestResult::Failure
-                        };
+                        });
 
-                        if tx.send(result_msg).is_err() {
-                            logger.error(&format!(
-                                "Worker {:?}: Failed to send request result to stats channel, exiting.", 
-                                thread_id));
-                            break 'main_loop;
-                        }
-
-                        // 限制状态更新频率以减少通道负载
                         let now = Instant::now();
                         if now.duration_since(last_stats_update) >= stats_update_interval {
-                            let _ = thread_stats_tx.send(ThreadStats {
+                            let _ = thread_stats_tx.try_send(ThreadStats {
+                                // Use try_send
                                 id: thread_id,
                                 requests,
                                 last_active: now,
@@ -326,25 +305,28 @@ pub async fn worker_loop(
                             last_stats_update = now;
                         }
                     }
-                    WorkerMessage::Resume => { /* 由暂停循环处理 */ }
+                    WorkerMessage::Resume => { /* Should be handled by the paused loop */ }
                 }
             }
-            Err(crossbeam_channel::TryRecvError::Empty) => {
-                // 没有消息，短暂休眠避免忙等
-                sleep(loop_sleep_duration).await;
-            }
-            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+            // Handle channel closed
+            Err(broadcast::error::RecvError::Closed) => {
                 logger.warning(&format!(
                     "Worker {:?} channel disconnected, exiting.",
                     thread_id
                 ));
                 break 'main_loop;
             }
+            // Handle lagged receiver
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                logger.warning(&format!("Worker {:?} lagged by {} messages.", thread_id, n));
+                // If lagging, we might miss Stop/Pause signals.
+                // Continue processing tasks, but log the warning.
+            }
         }
     }
 
-    // 确保最后发送一次线程状态更新
-    let _ = thread_stats_tx.send(ThreadStats {
+    // Ensure final stats update is sent (use try_send)
+    let _ = thread_stats_tx.try_send(ThreadStats {
         id: thread_id,
         requests,
         last_active: Instant::now(),
