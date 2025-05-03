@@ -3,7 +3,7 @@ name: Build Binaries
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 jobs:
@@ -71,33 +71,32 @@ jobs:
           echo "Project name: $PROJECT_NAME"
         shell: bash
 
-      - name: Build binary
-        run: |
-          if [[ "${{ matrix.target }}" == *"-unknown-linux-"* && "${{ matrix.target }}" != "x86_64-unknown-linux-gnu" ]]; then
-            cross build --release --target ${{ matrix.target }}
-          else
-            cargo build --release --target ${{ matrix.target }}
-          fi
-        shell: bash
-
       - name: Package binary
         run: |
           mkdir -p dist
-          
+
           BIN_NAME="${PROJECT_NAME}${{ matrix.ext }}"
           BINARY_SRC="target/${{ matrix.target }}/release/${BIN_NAME}"
-          
           ARCHIVE="${PROJECT_NAME}-${{ matrix.name }}"
 
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            cp "${BINARY_SRC}" "${BIN_NAME}"
-            7z a -tzip "dist/${ARCHIVE}.zip" "${BIN_NAME}"
-            certutil -hashfile "dist/${ARCHIVE}.zip" SHA256 | findstr /v "hash" > "dist/${ARCHIVE}.zip.sha256"
-          else
-            cp "${BINARY_SRC}" "${BIN_NAME}"
-            tar -czf "dist/${ARCHIVE}.tar.gz" "${BIN_NAME}"
-            sha256sum "dist/${ARCHIVE}.tar.gz" | awk '{print $1}' > "dist/${ARCHIVE}.tar.gz.sha256"
-          fi
+          cp "${BINARY_SRC}" "${BIN_NAME}"
+
+          case "$RUNNER_OS" in
+            "Windows")
+              7z a -tzip "dist/${ARCHIVE}.zip" "${BIN_NAME}"
+              certutil -hashfile "dist/${ARCHIVE}.zip" SHA256 | findstr /v "hash" > "dist/${ARCHIVE}.zip.sha256"
+              ;;
+            "macOS")
+              tar -czf "dist/${ARCHIVE}.tar.gz" "${BIN_NAME}"
+              shasum -a 256 "dist/${ARCHIVE}.tar.gz" | awk '{print $1}' > "dist/${ARCHIVE}.tar.gz.sha256"
+              ;;
+            *)
+              tar -czf "dist/${ARCHIVE}.tar.gz" "${BIN_NAME}"
+              sha256sum "dist/${ARCHIVE}.tar.gz" | awk '{print $1}' > "dist/${ARCHIVE}.tar.gz.sha256"
+              ;;
+          esac
+
+          rm -f "${BIN_NAME}"
         shell: bash
 
       - name: Upload binary artifact
