@@ -18,16 +18,14 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             name: linux-x86_64
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            name: linux-aarch64
-          - os: ubuntu-latest
-            target: armv7-unknown-linux-gnueabihf
-            name: linux-armv7
           # Windows targets
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
+            ext: .exe
+          - name: windows-i686
+            runner: windows-latest
+            target: i686-pc-windows-msvc
             ext: .exe
           # macOS targets
           - os: macos-latest
@@ -40,7 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies (Linux only)
+      - name: Install system dependencies
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
@@ -51,6 +49,12 @@ jobs:
             libxcb-xfixes0-dev \
             python3
         shell: bash
+      - name: Install Python3 on macOS
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew update
+          brew install python3
+        shell: bash
 
       - name: Build & cache with cross
         uses: houseabsolute/actions-rust-cross@v1
@@ -60,37 +64,42 @@ jobs:
           args: "--locked --release"
           strip: true
 
-      # 3. 修正 sed 提取项目名，支持缩进
       - name: Get project info
         id: project_info
         run: |
-          PROJECT_NAME=$(sed -n 's/^\s*name\s*=\s*"\(.*\)"/\1/p' Cargo.toml)
-          echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
+          PROJECT_NAME=$(awk '
+            /^\[package\]/ { in_pkg=1; next }
+            /^\[/ && in_pkg { exit }
+            in_pkg && /^\s*name\s*=/ {
+              match($0, /name\s*=\s*"(.*)"/, m)
+              print m[1]; exit
+            }
+          ' Cargo.toml)
+          echo "PROJECT_NAME=${PROJECT_NAME}" >> $GITHUB_ENV
           echo "Project name: $PROJECT_NAME"
         shell: bash
 
       - name: Package binary
         run: |
           mkdir -p dist
-          BINARY_PATH="target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}${{ matrix.ext }}"
+          BIN="${PROJECT_NAME}${matrix.ext}"
+          BINARY_SRC="target/${{ matrix.target }}/release/${BIN}"
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            ARCHIVE_NAME="${{ env.PROJECT_NAME }}-${{ matrix.name }}.zip"
-            cp "$BINARY_PATH" "${{ env.PROJECT_NAME }}${{ matrix.ext }}"
-            7z a "dist/$ARCHIVE_NAME" "${{ env.PROJECT_NAME }}${{ matrix.ext }}"
+            ARCHIVE="${PROJECT_NAME}-${{ matrix.name }}.zip"
+            cp "${BINARY_SRC}" "${BIN}"
+            7z a "dist/${ARCHIVE}" "${BIN}"
           else
-            ARCHIVE_NAME="${{ env.PROJECT_NAME }}-${{ matrix.name }}.tar.gz"
-            cp "$BINARY_PATH" "${{ env.PROJECT_NAME }}${{ matrix.ext }}"
-            tar -czf "dist/$ARCHIVE_NAME" "${{ env.PROJECT_NAME }}${{ matrix.ext }}"
+            ARCHIVE="${PROJECT_NAME}-${{ matrix.name }}.tar.gz"
+            cp "${BINARY_SRC}" "${BIN}"
+            tar -czf "dist/${ARCHIVE}" "${BIN}"
           fi
           cd dist
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            certutil -hashfile "$ARCHIVE_NAME" SHA256 \
-              | sed -E '1,2d' \
-              > "${ARCHIVE_NAME}.sha256"
+            certutil -hashfile "${ARCHIVE}" SHA256 \
+              | sed -E '1,2d' > "${ARCHIVE}.sha256"
           else
-            sha256sum "$ARCHIVE_NAME" \
-              | cut -d ' ' -f 1 \
-              > "${ARCHIVE_NAME}.sha256"
+            sha256sum "${ARCHIVE}" \
+              | cut -d ' ' -f1 > "${ARCHIVE}.sha256"
           fi
         shell: bash
 
@@ -119,9 +128,9 @@ jobs:
           cd dist
           echo "# SHA256 Checksums" > SHA256SUMS
           for sha in *.sha256; do
-            fname="${sha%.*}"
-            shasum=$(<"$sha")
-            echo "$shasum  $fname" >> SHA256SUMS
+            fn="${sha%.*}"
+            hs=$(<"$sha")
+            echo "$hs  $fn" >> SHA256SUMS
           done
           sha256sum SHA256SUMS > SHA256SUMS.sha256
 
