@@ -73,6 +73,7 @@ jobs:
 
       - name: Package binary
         run: |
+          tree
           mkdir -p dist
 
           BIN_NAME="${PROJECT_NAME}${{ matrix.ext }}"
