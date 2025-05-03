@@ -61,7 +61,10 @@ jobs:
       - name: Build & cache with cross
         uses: houseabsolute/actions-rust-cross@v1
         with:
+          command: build
           target: ${{ matrix.target }}
+          args: "--locked --release"
+          strip: true
 
       - name: Get project info
         id: project_info
