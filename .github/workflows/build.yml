@@ -23,9 +23,9 @@ jobs:
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
             ext: .exe
-          - os: windows-i686
-            runner: windows-latest
+          - os: windows-latest
             target: i686-pc-windows-msvc
+            name: windows-i686
             ext: .exe
           # macOS targets
           - os: macos-latest
@@ -49,12 +49,6 @@ jobs:
             libxcb-xfixes0-dev \
             python3
         shell: bash
-      - name: Install Python3 on macOS
-        if: matrix.os == 'macos-latest'
-        run: |
-          brew update
-          brew install python3
-        shell: bash
 
       - name: Build & cache with cross
         uses: houseabsolute/actions-rust-cross@v1
@@ -67,14 +61,7 @@ jobs:
       - name: Get project info
         id: project_info
         run: |
-          PROJECT_NAME=$(awk '
-            /^\[package\]/ { in_pkg=1; next }
-            /^\[/ && in_pkg { exit }
-            in_pkg && /^\s*name\s*=/ {
-              match($0, /name\s*=\s*"(.*)"/, m)
-              print m[1]; exit
-            }
-          ' Cargo.toml)
+          PROJECT_NAME=$(grep -m1 '^name =' Cargo.toml | sed -E 's/^name *= *"([^"]+)".*/\1/')
           echo "PROJECT_NAME=${PROJECT_NAME}" >> $GITHUB_ENV
           echo "Project name: $PROJECT_NAME"
         shell: bash
@@ -84,22 +71,19 @@ jobs:
           mkdir -p dist
           BIN="${PROJECT_NAME}${matrix.ext}"
           BINARY_SRC="target/${{ matrix.target }}/release/${BIN}"
+          ARCHIVE="${PROJECT_NAME}-${{ matrix.name }}"
+
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            ARCHIVE="${PROJECT_NAME}-${{ matrix.name }}.zip"
             cp "${BINARY_SRC}" "${BIN}"
-            7z a "dist/${ARCHIVE}" "${BIN}"
+            powershell -Command """
+              Compress-Archive -Path '${BIN}' -DestinationPath 'dist/${ARCHIVE}.zip' -Force
+              (Get-FileHash -Path 'dist/${ARCHIVE}.zip' -Algorithm SHA256).Hash.ToLower() | 
+                Out-File -Encoding utf8 'dist/${ARCHIVE}.zip.sha256'
+            """
           else
-            ARCHIVE="${PROJECT_NAME}-${{ matrix.name }}.tar.gz"
             cp "${BINARY_SRC}" "${BIN}"
-            tar -czf "dist/${ARCHIVE}" "${BIN}"
-          fi
-          cd dist
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            certutil -hashfile "${ARCHIVE}" SHA256 \
-              | sed -E '1,2d' > "${ARCHIVE}.sha256"
-          else
-            sha256sum "${ARCHIVE}" \
-              | cut -d ' ' -f1 > "${ARCHIVE}.sha256"
+            tar -czf "dist/${ARCHIVE}.tar.gz" "${BIN}"
+            sha256sum "dist/${ARCHIVE}.tar.gz" | cut -d ' ' -f1 > "dist/${ARCHIVE}.tar.gz.sha256"
           fi
         shell: bash
 
