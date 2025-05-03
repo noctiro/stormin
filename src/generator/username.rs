@@ -30,10 +30,6 @@ static COMMON_SUFFIXES: &[&str] = &[
     "lily", "1234", "abc", "superman", "haha", "cool", "fun", "good",
 ];
 
-static POOL_LETTERS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-static POOL_DIGITS: &[u8] = b"0123456789";
-static POOL_SYMBOLS: &[u8] = b"!@#$%^&*_-";
-
 pub fn generate_username<T: RngCore>(rng: &mut T) -> String {
     // Allocate with reasonable capacity once
     let mut result = String::with_capacity(32);
