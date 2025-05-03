@@ -3,7 +3,7 @@ name: Build Binaries
 on:
   push:
     tags:
-      - "v*"
+      - 'v*'
   workflow_dispatch:
 
 jobs:
@@ -40,6 +40,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install system dependencies (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            python3
+        shell: bash
+
       - name: Build & cache with cross
         uses: houseabsolute/actions-rust-cross@v1
         with:
@@ -48,11 +60,11 @@ jobs:
           args: "--locked --release"
           strip: true
 
+      # 3. 修正 sed 提取项目名，支持缩进
       - name: Get project info
         id: project_info
         run: |
-          PROJECT_NAME=$(grep -m 1 '^name\s*=' Cargo.toml \
-            | sed -E 's/name\s*=\s*"([^"]*)"/\1/')
+          PROJECT_NAME=$(sed -n 's/^\s*name\s*=\s*"\(.*\)"/\1/p' Cargo.toml)
           echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
           echo "Project name: $PROJECT_NAME"
         shell: bash
@@ -60,20 +72,20 @@ jobs:
       - name: Package binary
         run: |
           mkdir -p dist
-          BINARY_PATH="target/${{ matrix.target }}/release/$PROJECT_NAME${{ matrix.ext }}"
+          BINARY_PATH="target/${{ matrix.target }}/release/${{ env.PROJECT_NAME }}${{ matrix.ext }}"
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            ARCHIVE_NAME="${PROJECT_NAME}-${{ matrix.name }}.zip"
-            cp "$BINARY_PATH" "$PROJECT_NAME${{ matrix.ext }}"
-            7z a "dist/$ARCHIVE_NAME" "$PROJECT_NAME${{ matrix.ext }}"
+            ARCHIVE_NAME="${{ env.PROJECT_NAME }}-${{ matrix.name }}.zip"
+            cp "$BINARY_PATH" "${{ env.PROJECT_NAME }}${{ matrix.ext }}"
+            7z a "dist/$ARCHIVE_NAME" "${{ env.PROJECT_NAME }}${{ matrix.ext }}"
           else
-            ARCHIVE_NAME="${PROJECT_NAME}-${{ matrix.name }}.tar.gz"
-            cp "$BINARY_PATH" "$PROJECT_NAME${{ matrix.ext }}"
-            tar -czf "dist/$ARCHIVE_NAME" "$PROJECT_NAME${{ matrix.ext }}"
+            ARCHIVE_NAME="${{ env.PROJECT_NAME }}-${{ matrix.name }}.tar.gz"
+            cp "$BINARY_PATH" "${{ env.PROJECT_NAME }}${{ matrix.ext }}"
+            tar -czf "dist/$ARCHIVE_NAME" "${{ env.PROJECT_NAME }}${{ matrix.ext }}"
           fi
           cd dist
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             certutil -hashfile "$ARCHIVE_NAME" SHA256 \
-              | sed -E '1d;2d' \
+              | sed -E '1,2d' \
               > "${ARCHIVE_NAME}.sha256"
           else
             sha256sum "$ARCHIVE_NAME" \
@@ -102,10 +114,8 @@ jobs:
       - name: Organize artifacts
         run: |
           mkdir -p dist
-          find artifacts -type f \( -name "*.zip" -o -name "*.tar.gz" \) \
-            -exec cp {} dist/ \;
-          find artifacts -type f -name "*.sha256" \
-            -exec cp {} dist/ \;
+          find artifacts -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec cp {} dist/ \;
+          find artifacts -type f -name "*.sha256" -exec cp {} dist/ \;
           cd dist
           echo "# SHA256 Checksums" > SHA256SUMS
           for sha in *.sha256; do
