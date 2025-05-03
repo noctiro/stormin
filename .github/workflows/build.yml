@@ -1,133 +1,145 @@
-name: Build and Release
+name: Build Binaries
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to release (e.g. v1.2.3)"
-        required: true
 
 jobs:
-  # Build: Linux、Windows、ARMv7
-  build-uni:
-    runs-on: ubuntu-latest
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
-          - armv7-unknown-linux-gnueabihf
-          - i686-unknown-linux-gnu
-          - x86_64-pc-windows-gnu
-          - aarch64-pc-windows-msvc
-          - i686-pc-windows-gnu
+        include:
+          # Linux targets
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            name: linux-aarch64
+          - os: ubuntu-latest
+            target: armv7-unknown-linux-gnueabihf
+            name: linux-armv7
+          # Windows targets
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x86_64
+            ext: .exe
+          # macOS targets
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-aarch64
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v3
 
-      - name: Install Rust & targets
-        uses: actions-rs/toolchain@v1
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          override: true
-          target: ${{ matrix.target }}
+          targets: ${{ matrix.target }}
 
-      - name: Install cross
-        run: cargo install cross --version 0.2.1 || true
-
-      - name: Build
-        run: cross build --release --target ${{ matrix.target }}
-
-      - name: Package Linux (tar.gz, deb, rpm, AppImage)
-        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
+      - name: Setup cross (for non-native Linux targets)
+        if: contains(matrix.target, 'linux') && !contains(matrix.target, 'x86_64-unknown-linux-gnu')
         run: |
-          BIN=target/${{ matrix.target }}/release/${{ github.event.repository.name }}
+          curl -sSfL https://github.com/cross-rs/cross/releases/download/v0.2.5/cross-x86_64-unknown-linux-gnu.tar.gz | tar xzf -
+          sudo mv cross /usr/local/bin/
+          sudo chmod +x /usr/local/bin/cross
+        shell: bash
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Get project info
+        id: project_info
+        run: |
+          PROJECT_NAME=$(grep -m 1 '^name\s*=' Cargo.toml | sed -E 's/name\s*=\s*"([^"]*)"/\1/g')
+          echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
+          echo "Project name: $PROJECT_NAME"
+        shell: bash
+
+      - name: Build binary
+        run: |
+          if [[ "${{ matrix.target }}" == *"-unknown-linux-"* && "${{ matrix.target }}" != "x86_64-unknown-linux-gnu" ]]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+        shell: bash
+
+      - name: Package binary
+        run: |
           mkdir -p dist
-          cp "$BIN" dist/
-          # tar.gz
-          tar czf dist/${{ github.event.repository.name }}-${{ matrix.target }}.tar.gz -C dist ${{ github.event.repository.name }}
-          # .deb
-          cargo install cargo-deb --version 1.38.0 || true
-          cargo deb --no-build --target ${{ matrix.target }} --output dist/${{ github.event.repository.name }}_${{ matrix.target }}.deb
-          # .rpm via fpm
-          sudo apt-get update && sudo apt-get install -y ruby-dev gcc make rpm
-          gem install --no-document fpm
-          fpm -s dir -t rpm -n ${{ github.event.repository.name }} -v ${{ github.event.inputs.version }} --architecture ${{ matrix.target }} dist/${{ github.event.repository.name }}=/usr/local/bin
-          # AppImage
-          curl -LO "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-x86_64.AppImage"
-          chmod +x linuxdeploy-x86_64.AppImage
-          ./linuxdeploy-x86_64.AppImage --appdir AppDir -d dist/${{ github.event.repository.name }}.desktop -i icon.png \
-            --output appimage --executable "$BIN"
+          
+          # Determine binary path
+          BINARY_PATH="target/${{ matrix.target }}/release/$PROJECT_NAME${{ matrix.ext }}"
+          
+          # Create archive with the binary
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ARCHIVE_NAME="${PROJECT_NAME}-${{ matrix.name }}.zip"
+            cp "$BINARY_PATH" "$PROJECT_NAME${{ matrix.ext }}"
+            7z a "dist/$ARCHIVE_NAME" "$PROJECT_NAME${{ matrix.ext }}"
+          else
+            ARCHIVE_NAME="${PROJECT_NAME}-${{ matrix.name }}.tar.gz"
+            cp "$BINARY_PATH" "$PROJECT_NAME${{ matrix.ext }}"
+            tar -czf "dist/$ARCHIVE_NAME" "$PROJECT_NAME${{ matrix.ext }}"
+          fi
+          
+          # Generate checksum
+          cd dist
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            certutil -hashfile "$ARCHIVE_NAME" SHA256 | grep -v "^SHA256" | grep -v "^CertUtil" | tr -d " \t\r\n" > "${ARCHIVE_NAME}.sha256"
+          else
+            sha256sum "$ARCHIVE_NAME" | cut -d ' ' -f 1 > "${ARCHIVE_NAME}.sha256"
+          fi
+        shell: bash
 
-      - name: Upload executables and packages
-        uses: actions/upload-artifact@v4
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v3
         with:
-          name: ${{ matrix.target }}-assets
-          path: |
-            target/${{ matrix.target }}/release/${{ github.event.repository.name }}${{ contains(matrix.target, 'windows') && '.exe' || '' }}
-            dist/*
+          name: ${{ env.PROJECT_NAME }}-${{ matrix.name }}
+          path: dist/
+          if-no-files-found: error
 
-  # Build(macOS): DMG + ZIP
-  build-macos:
-    runs-on: macos-latest
-    strategy:
-      matrix:
-        target:
-          - x86_64-apple-darwin
-          - aarch64-apple-darwin
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust target
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Build release
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Create .app bundle
-        run: |
-          APP_NAME=${{ github.event.repository.name }}
-          APP_DIR="$APP_NAME-${{ matrix.target }}.app"
-          mkdir -p "$APP_DIR/Contents/MacOS"
-          cp "target/${{ matrix.target }}/release/$APP_NAME" "$APP_DIR/Contents/MacOS/$APP_NAME"
-
-      - name: Make DMG
-        run: |
-          DMG_NAME=${{ github.event.repository.name }}-${{ matrix.target }}.dmg
-          hdiutil create -volname "${{ github.event.repository.name }}" -srcfolder "$APP_NAME-${{ matrix.target }}.app" -ov -format UDZO "$DMG_NAME"
-
-      - name: Make ZIP
-        run: |
-          ZIP_NAME=${{ github.event.repository.name }}-${{ matrix.target }}.zip
-          zip -r "$ZIP_NAME" "${{ github.event.repository.name }}-${{ matrix.target }}.app"
-
-      - name: Upload macOS assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.target }}-macos
-          path: |
-            ${{ github.event.repository.name }}-${{ matrix.target }}.dmg
-            ${{ github.event.repository.name }}-${{ matrix.target }}.zip
-
-  # Release
-  release:
-    needs: [build-uni, build-macos]
+  collect:
+    name: Collect binaries
+    needs: build
     runs-on: ubuntu-latest
-
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
         with:
-          path: all-assets
+          path: artifacts
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Organize artifacts
+        run: |
+          mkdir -p dist
+          find artifacts -type f -name "*.zip" -o -name "*.tar.gz" | xargs -I{} cp {} dist/
+          find artifacts -type f -name "*.sha256" | xargs -I{} cp {} dist/
+          
+          # Create a combined checksums file
+          cd dist
+          echo "# SHA256 Checksums" > SHA256SUMS
+          for checksum_file in *.sha256; do
+            file_name="${checksum_file%.*}"
+            checksum=$(cat "$checksum_file")
+            echo "$checksum  $file_name" >> SHA256SUMS
+          done
+          
+          # Generate a combined checksum for the verification file itself
+          sha256sum SHA256SUMS > SHA256SUMS.sha256
+
+      - name: Upload combined artifacts
+        uses: actions/upload-artifact@v3
         with:
-          tag_name: ${{ github.event.inputs.version }}
-          name: Release ${{ github.event.inputs.version }}
-          draft: false
-          prerelease: false
-          files: all-assets/**/*
+          name: all-binaries
+          path: dist/
+          if-no-files-found: error
