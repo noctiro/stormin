@@ -1,11 +1,11 @@
 use crate::config::{self, load_config_and_compile};
 use crate::logger::Logger;
 use crate::ui::DebugInfo;
-use crate::ui::{self, draw_ui, RunningState, Stats, TargetStats, ThreadStats};
+use crate::ui::{draw_ui, RunningState, Stats, TargetStats, ThreadStats};
 use crate::worker::{worker_loop, RequestResult, TargetUpdate, WorkerMessage};
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEventKind,
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode,
     },
     execute, // Explicitly import execute macro
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -251,13 +251,7 @@ impl App {
                             _ => {} // Ignore other keys
                         } // End match key.code
                     } // End Event::Key arm
-                    Event::Mouse(event) => {
-                        if event.kind == MouseEventKind::Down(MouseButton::Left) {
-                            // Try copy log entry, ignore result
-                            let _ = ui::try_copy_log_entry(&self.stats, event.row);
-                        }
-                    }
-                    // Add catch-all for other events (Resize, Focus, etc.)
+                    // Add catch-all for other events (Resize, Focus, Mouse, etc.)
                     _ => {}
                 } // End match event::read()?
             }

@@ -13,7 +13,6 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls", "socks"], defaul
 crossterm = "0.29"
 ctrlc = "3.4.6"
 sysinfo = "0.34.2"
-clipboard = "0.5"
 url = "2"
 serde_json = "1.0.140"
 tokio = { version = "1", features = ["full"] }

@@ -1,11 +1,9 @@
-use clipboard::{ClipboardContext, ClipboardProvider};
 use ratatui::{
     prelude::*,
     symbols,
     widgets::{BarChart, Block, Borders, Gauge, LineGauge, Paragraph, Wrap},
 };
 use std::collections::VecDeque;
-use std::io;
 use std::{thread, time::Instant};
 use sysinfo::System;
 
@@ -432,22 +430,4 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
         f.render_widget(targets_status, chunks[6]);
     })?;
     Ok(())
-}
-
-pub fn try_copy_log_entry(stats: &Stats, row: u16) -> io::Result<bool> {
-    let entry_index = row as usize;
-    if entry_index < stats.debug_logs.len() {
-        if let Ok(mut ctx) = ClipboardContext::new() {
-            let _ = ctx.set_contents(
-                stats
-                    .debug_logs
-                    .iter()
-                    .nth(entry_index)
-                    .map(|d| d.message.clone())
-                    .unwrap_or_default(),
-            );
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
