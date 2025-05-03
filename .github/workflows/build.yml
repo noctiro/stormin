@@ -86,8 +86,8 @@ jobs:
 
           case "$RUNNER_OS" in
             "Windows")
-              7z a -tzip "dist/${ARCHIVE}.zip" "${BIN_NAME}"
-              certutil -hashfile "dist/${ARCHIVE}.zip" SHA256 | findstr /v "hash" > "dist/${ARCHIVE}.zip.sha256"
+              powershell -Command "Compress-Archive -Path '${BIN_NAME}' -DestinationPath 'dist/${ARCHIVE}.zip'"
+              powershell -Command "Get-FileHash 'dist/${ARCHIVE}.zip' -Algorithm SHA256 | ForEach-Object { \$_.Hash } > 'dist/${ARCHIVE}.zip.sha256'"
               ;;
             "macOS")
               tar -czf "dist/${ARCHIVE}.tar.gz" "${BIN_NAME}"
