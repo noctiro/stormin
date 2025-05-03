@@ -3,7 +3,7 @@ name: Build Binaries
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 jobs:
@@ -40,49 +40,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Build & cache with cross
+        uses: houseabsolute/actions-rust-cross@v1
         with:
-          targets: ${{ matrix.target }}
-
-      - name: Setup cross (for non-native Linux targets)
-        if: contains(matrix.target, 'linux') && !contains(matrix.target, 'x86_64-unknown-linux-gnu')
-        run: |
-          curl -sSfL https://github.com/cross-rs/cross/releases/download/v0.2.5/cross-x86_64-unknown-linux-gnu.tar.gz | tar xzf -
-          sudo mv cross /usr/local/bin/
-          sudo chmod +x /usr/local/bin/cross
-        shell: bash
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
+          command: build
+          target: ${{ matrix.target }}
+          args: "--locked --release"
+          strip: true
 
       - name: Get project info
         id: project_info
         run: |
-          PROJECT_NAME=$(grep -m 1 '^name\s*=' Cargo.toml | sed -E 's/name\s*=\s*"([^"]*)"/\1/g')
+          PROJECT_NAME=$(grep -m 1 '^name\s*=' Cargo.toml \
+            | sed -E 's/name\s*=\s*"([^"]*)"/\1/')
           echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
           echo "Project name: $PROJECT_NAME"
-        shell: bash
-
-      - name: Build binary
-        run: |
-          if [[ "${{ matrix.target }}" == *"-unknown-linux-"* && "${{ matrix.target }}" != "x86_64-unknown-linux-gnu" ]]; then
-            cross build --release --target ${{ matrix.target }}
-          else
-            cargo build --release --target ${{ matrix.target }}
-          fi
         shell: bash
 
       - name: Package binary
         run: |
           mkdir -p dist
-          
-          # Determine binary path
           BINARY_PATH="target/${{ matrix.target }}/release/$PROJECT_NAME${{ matrix.ext }}"
-          
-          # Create archive with the binary
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             ARCHIVE_NAME="${PROJECT_NAME}-${{ matrix.name }}.zip"
             cp "$BINARY_PATH" "$PROJECT_NAME${{ matrix.ext }}"
@@ -92,13 +70,15 @@ jobs:
             cp "$BINARY_PATH" "$PROJECT_NAME${{ matrix.ext }}"
             tar -czf "dist/$ARCHIVE_NAME" "$PROJECT_NAME${{ matrix.ext }}"
           fi
-          
-          # Generate checksum
           cd dist
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            certutil -hashfile "$ARCHIVE_NAME" SHA256 | grep -v "^SHA256" | grep -v "^CertUtil" | tr -d " \t\r\n" > "${ARCHIVE_NAME}.sha256"
+            certutil -hashfile "$ARCHIVE_NAME" SHA256 \
+              | sed -E '1d;2d' \
+              > "${ARCHIVE_NAME}.sha256"
           else
-            sha256sum "$ARCHIVE_NAME" | cut -d ' ' -f 1 > "${ARCHIVE_NAME}.sha256"
+            sha256sum "$ARCHIVE_NAME" \
+              | cut -d ' ' -f 1 \
+              > "${ARCHIVE_NAME}.sha256"
           fi
         shell: bash
 
@@ -122,19 +102,17 @@ jobs:
       - name: Organize artifacts
         run: |
           mkdir -p dist
-          find artifacts -type f -name "*.zip" -o -name "*.tar.gz" | xargs -I{} cp {} dist/
-          find artifacts -type f -name "*.sha256" | xargs -I{} cp {} dist/
-          
-          # Create a combined checksums file
+          find artifacts -type f \( -name "*.zip" -o -name "*.tar.gz" \) \
+            -exec cp {} dist/ \;
+          find artifacts -type f -name "*.sha256" \
+            -exec cp {} dist/ \;
           cd dist
           echo "# SHA256 Checksums" > SHA256SUMS
-          for checksum_file in *.sha256; do
-            file_name="${checksum_file%.*}"
-            checksum=$(cat "$checksum_file")
-            echo "$checksum  $file_name" >> SHA256SUMS
+          for sha in *.sha256; do
+            fname="${sha%.*}"
+            shasum=$(<"$sha")
+            echo "$shasum  $fname" >> SHA256SUMS
           done
-          
-          # Generate a combined checksum for the verification file itself
           sha256sum SHA256SUMS > SHA256SUMS.sha256
 
       - name: Upload combined artifacts
