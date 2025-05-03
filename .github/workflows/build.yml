@@ -18,7 +18,12 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             name: linux-x86_64
-            ext: ""
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            name: linux-aarch64
+          - os: ubuntu-latest
+            target: armv7-unknown-linux-gnueabihf
+            name: linux-armv7
           # Windows targets
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -56,29 +61,42 @@ jobs:
       - name: Build & cache with cross
         uses: houseabsolute/actions-rust-cross@v1
         with:
-          command: build
           target: ${{ matrix.target }}
-          args: "--locked --release"
-          strip: true
+
+      - name: Get project info
+        id: project_info
+        run: |
+          PROJECT_NAME=$(grep -m 1 '^name[[:space:]]*=' Cargo.toml | sed -E 's/name[[:space:]]*=[[:space:]]*"([^"]*)"/\1/g')
+          echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
+          echo "Project name: $PROJECT_NAME"
+        shell: bash
+
+      - name: Build binary
+        run: |
+          if [[ "${{ matrix.target }}" == *"-unknown-linux-"* && "${{ matrix.target }}" != "x86_64-unknown-linux-gnu" ]]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+        shell: bash
 
       - name: Package binary
         run: |
           mkdir -p dist
-          BIN="${{ github.event.repository.name }}${{ matrix.ext }}"
-          BINARY_SRC="target/${{ matrix.target }}/release/${BIN}"
-          ARCHIVE="${{ github.event.repository.name }}-${{ matrix.name }}"
+          
+          BIN_NAME="${PROJECT_NAME}${{ matrix.ext }}"
+          BINARY_SRC="target/${{ matrix.target }}/release/${BIN_NAME}"
+          
+          ARCHIVE="${PROJECT_NAME}-${{ matrix.name }}"
 
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            cp "${BINARY_SRC}" "${BIN}"
-            powershell -Command """
-              Compress-Archive -Path '${BIN}' -DestinationPath 'dist/${ARCHIVE}.zip' -Force
-              (Get-FileHash -Path 'dist/${ARCHIVE}.zip' -Algorithm SHA256).Hash.ToLower() | 
-                Out-File -Encoding utf8 'dist/${ARCHIVE}.zip.sha256'
-            """
+            cp "${BINARY_SRC}" "${BIN_NAME}"
+            7z a -tzip "dist/${ARCHIVE}.zip" "${BIN_NAME}"
+            certutil -hashfile "dist/${ARCHIVE}.zip" SHA256 | findstr /v "hash" > "dist/${ARCHIVE}.zip.sha256"
           else
-            cp "${BINARY_SRC}" "${BIN}"
-            tar -czf "dist/${ARCHIVE}.tar.gz" "${BIN}"
-            sha256sum "dist/${ARCHIVE}.tar.gz" | cut -d ' ' -f1 > "dist/${ARCHIVE}.tar.gz.sha256"
+            cp "${BINARY_SRC}" "${BIN_NAME}"
+            tar -czf "dist/${ARCHIVE}.tar.gz" "${BIN_NAME}"
+            sha256sum "dist/${ARCHIVE}.tar.gz" | awk '{print $1}' > "dist/${ARCHIVE}.tar.gz.sha256"
           fi
         shell: bash
 
