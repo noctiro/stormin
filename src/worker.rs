@@ -26,6 +26,7 @@ pub struct TargetUpdate {
     pub timestamp: Instant,
     pub debug: Option<String>, // Full debug message for logging
     pub network_error: Option<String>, // Specific error for UI display when request fails early 响应前失败
+    pub thread_id: ThreadId, // Add ThreadId
 }
 
 struct RequestBuffer {
@@ -240,6 +241,7 @@ pub async fn worker_loop(
                             debug: Some(debug_message),
                             // Populate network_error only if the request failed before getting a status
                             network_error: error_details, // error_details is Some(String) only on Err(e)
+                            thread_id, // Include thread_id
                         };
                         if let Err(e) = stats_tx.send(update).await {
                             logger.warning(&format!("Failed to send stats update: {}", e));

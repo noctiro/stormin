@@ -98,15 +98,8 @@ impl App {
             let worker_logger = self.logger.clone();
 
             let stats_tx = self.target_stats_tx.clone();
-            let thread_id = std::thread::current().id();
-            // 初始化线程统计
-            self.stats.threads.push(ThreadStats {
-                id: thread_id,
-                requests: 0,
-                last_active: Instant::now(),
-            });
             let handle = tokio::spawn(async move {
-                worker_loop(rx, cfg, thread_id, worker_logger.clone(), stats_tx).await
+                 worker_loop(rx, cfg, std::thread::current().id(), worker_logger.clone(), stats_tx).await // worker_loop receives its *actual* running thread's ID
             });
             self.worker_handles.push(handle);
         }
@@ -122,11 +115,12 @@ impl App {
             logger_clone.info("Log receiver thread started.");
             while let Some(log_entry) = log_rx.blocking_recv() {
                 let update = TargetUpdate { // Ensuring this initialization is correct
-                    url: String::new(),
-                    success: false,
+                    url: String::new(), // Empty URL signifies a debug log, not a target result
+                    success: false,     // Not applicable for logs
                     timestamp: log_entry.timestamp,
                     debug: Some(log_entry.message),
-                    network_error: None, // Explicitly adding the field here again
+                    network_error: None, // Not applicable for logs
+                    thread_id: std::thread::current().id(),
                 };
                 if debug_logs_tx.blocking_send(update).is_err() {
                     eprintln!("Log receiver failed to send to UI channel, exiting.");
@@ -208,6 +202,7 @@ impl App {
             }
 
             while let Ok(update) = self.target_stats_rx.try_recv() {
+                // 首先处理调试日志（它们没有 URL）
                 if update.url.is_empty() {
                     if let Some(debug_msg) = update.debug {
                         self.stats.debug_logs.push_back(DebugInfo {
@@ -218,35 +213,53 @@ impl App {
                             self.stats.debug_logs.pop_front();
                         }
                     }
+                    // 跳过后续的统计更新，因为这不是一个 target update
+                    continue;
+                }
+
+                // 更新全局统计
+                self.stats.total += 1;
+                if update.success {
+                    self.stats.success += 1;
+                    self.stats.last_success_time = Some(update.timestamp);
                 } else {
-                    // 更新全局统计
-                    self.stats.total += 1;
+                    self.stats.failure += 1;
+                    self.stats.last_failure_time = Some(update.timestamp);
+                }
+
+                // 更新目标统计
+                if let Some(target) = self.stats.targets.iter_mut().find(|t| t.url == update.url) {
                     if update.success {
-                        self.stats.success += 1;
-                        self.stats.last_success_time = Some(update.timestamp);
+                        target.success += 1;
+                        target.last_success_time = Some(update.timestamp);
                     } else {
-                        self.stats.failure += 1;
-                        self.stats.last_failure_time = Some(update.timestamp);
+                        target.failure += 1;
+                        target.last_failure_time = Some(update.timestamp);
                     }
-                    
-                    // 更新目标统计
-                    if let Some(target) = self.stats.targets.iter_mut().find(|t| t.url == update.url) {
-                        if update.success {
-                            target.success += 1;
-                            target.last_success_time = Some(update.timestamp);
-                        } else {
-                            target.failure += 1;
-                            target.last_failure_time = Some(update.timestamp);
-                        }
-                        // 更新最后的网络错误信息
-                        // 如果本次更新包含网络错误，则记录它
-                        // 如果本次更新是失败但*没有*网络错误（例如HTTP 4xx/5xx），则清除之前的网络错误记录
-                        if let Some(network_err) = update.network_error {
-                            target.last_network_error = Some(network_err);
-                        } else if !update.success {
-                             target.last_network_error = None; // 清除旧的网络错误（如果是HTTP失败）
-                        }
-                        // 如果是成功，则保留之前的 network_error 状态（可能是None或之前的错误）
+                    // 更新最后的网络错误信息
+                    if let Some(network_err) = update.network_error {
+                        target.last_network_error = Some(network_err);
+                    } else if !update.success {
+                         target.last_network_error = None; // 清除旧的网络错误（如果是HTTP失败）
+                    }
+                }
+
+                // 更新线程统计 - 动态查找或添加
+                let now = update.timestamp; // Use the timestamp from the update
+                match self.stats.threads.iter_mut().find(|ts| ts.id == update.thread_id) {
+                    Some(thread_stat) => {
+                        // 找到现有条目，更新它
+                        thread_stat.requests += 1;
+                        thread_stat.last_active = now;
+                    }
+                    None => {
+                        // 未找到，添加新条目
+                        self.logger.info(&format!("First update received from new thread ID: {:?}", update.thread_id));
+                        self.stats.threads.push(ThreadStats {
+                            id: update.thread_id,
+                            requests: 1, // 初始请求计数为 1
+                            last_active: now,
+                        });
                     }
                 }
             }
