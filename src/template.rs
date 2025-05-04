@@ -3,8 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     config::loader::TemplateAstNode,
     generator::{
-        email::generate_email, password::generate_password, qqid::generate_qq_id,
-        username::generate_username,
+        cn_mobile::generate_cn_mobile, email::generate_email, password::generate_password, qqid::generate_qq_id, username::generate_username
     },
     logger::Logger,
 };
@@ -54,8 +53,15 @@ pub fn apply_function(
                 logger.warning(&format!("Warning: email function does not take arguments."));
             }
             Ok(generate_email(&mut rng()))
-        }, // Add comma here
-        // Other functions
+        },
+        "cn_mobile" => {
+            if !args.is_empty() {
+                logger.warning(&format!(
+                    "Warning: cn_mobile function does not take arguments."
+                ));
+            }
+            Ok(generate_cn_mobile(&mut rng()))
+        }
         "base64" => {
             match args.first() {
                 Some(arg) => Ok(STANDARD.encode(arg)),
@@ -274,8 +280,8 @@ pub fn render_ast_node(
 /// Returns a HashSet containing the names of all built-in template functions.
 pub fn get_builtin_function_names() -> HashSet<String> {
     [
-        "username", "password", "qqid", "email", "base64", "upper", "lower", "replace", "substr",
-        "random",
+        "username", "password", "qqid", "email", "cn_mobile",
+        "base64", "upper", "lower", "replace", "substr", "random",
     ]
     .iter()
     .map(|&s| s.to_string())

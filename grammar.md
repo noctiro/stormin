@@ -61,18 +61,19 @@ ${<函数名|变量名>[(:<定义名>)][:<参数1>[,<参数2>,…]]}
 
 ## 内置函数列表
 
-| 函数       | 参数                     | 说明         | 示例                                              |
-| ---------- | ------------------------ | ------------ | ------------------------------------------------- |
-| `username` | —                        | 随机用户名   | `${username}`                                     |
-| `password` | —                        | 随机密码     | `${password}`                                     |
-| `qqid`     | —                        | 随机 QQ 号   | `${qqid}`                                         |
-| `email`    | —                        | 随机电子邮箱 | `${email}`                                        |
-| `base64`   | `string`                 | Base64 编码  | `${base64:"test"}` → `dGVzdA==`                   |
-| `upper`    | `string`                 | 转大写       | `${upper:"hello"}` → `HELLO`                      |
-| `lower`    | `string`                 | 转小写       | `${lower:"HELLO"}` → `hello`                      |
-| `replace`  | `str`, `old`, `new`      | 全部替换     | `${replace:"a.b.c",".","-"}` → `a-b-c`            |
-| `substr`   | `str`, `start`\[, `len`] | 取子串       | `${substr:"abcdef",1,3}` → `bcd`                  |
-| `random`   | `type`, …                | 生成随机值   | `${random:chars,8}` <br> `${random:number,1,100}` |
+| 函数        | 参数                     | 说明             | 示例                                              |
+| ----------- | ------------------------ | ---------------- | ------------------------------------------------- |
+| `username`  | —                        | 随机用户名       | `${username}`                                     |
+| `password`  | —                        | 随机密码         | `${password}`                                     |
+| `qqid`      | —                        | 随机 QQ 号       | `${qqid}`                                         |
+| `email`     | —                        | 随机电子邮箱     | `${email}`                                        |
+| `cn_mobile` | —                        | 随机中国电话号码 | `${cn_mobile}`                                    |
+| `base64`    | `string`                 | Base64 编码      | `${base64:"test"}` → `dGVzdA==`                   |
+| `upper`     | `string`                 | 转大写           | `${upper:"hello"}` → `HELLO`                      |
+| `lower`     | `string`                 | 转小写           | `${lower:"HELLO"}` → `hello`                      |
+| `replace`   | `str`, `old`, `new`      | 全部替换         | `${replace:"a.b.c",".","-"}` → `a-b-c`            |
+| `substr`    | `str`, `start`\[, `len`] | 取子串           | `${substr:"abcdef",1,3}` → `bcd`                  |
+| `random`    | `type`, …                | 生成随机值       | `${random:chars,8}` <br> `${random:number,1,100}` |
 
 ---
 
