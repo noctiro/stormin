@@ -335,6 +335,17 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
             }
         }
 
+        // Sort params: prioritize definitions over simple lookups/calls
+        // This helps ensure definitions like :pass are processed before uses like ${pass}
+        // Note: This is a simple heuristic and might not cover complex dependency chains.
+        parsed_params.sort_by_key(|(_, node)| {
+            match node {
+                TemplateAstNode::FunctionCall { def_name, .. } if def_name.is_some() => 0, // Definitions first
+                _ => 1, // Everything else later
+            }
+        });
+
+
         // If parsing succeeded, perform target-level validation
         if !target_has_error {
              if let Err(e) = super::validator::validate_target_templates(&parsed_params, &builtin_functions) {

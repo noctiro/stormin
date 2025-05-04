@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     config::loader::TemplateAstNode,
     generator::{
-        cn_mobile::generate_cn_mobile, email::generate_email, password::generate_password, qqid::generate_qq_id, username::generate_username
+        cn_mobile::generate_cn_mobile, email::generate_email, password::generate_password,
+        qqid::generate_qq_id, username::generate_username,
     },
     logger::Logger,
 };
@@ -53,7 +54,7 @@ pub fn apply_function(
                 logger.warning(&format!("Warning: email function does not take arguments."));
             }
             Ok(generate_email(&mut rng()))
-        },
+        }
         "cn_mobile" => {
             if !args.is_empty() {
                 logger.warning(&format!(
@@ -62,13 +63,11 @@ pub fn apply_function(
             }
             Ok(generate_cn_mobile(&mut rng()))
         }
-        "base64" => {
-            match args.first() {
-                Some(arg) => Ok(STANDARD.encode(arg)),
-                None => {
-                    logger.warning("Warning: base64 function called with no arguments.");
-                    Ok(String::new())
-                }
+        "base64" => match args.first() {
+            Some(arg) => Ok(STANDARD.encode(arg)),
+            None => {
+                logger.warning("Warning: base64 function called with no arguments.");
+                Ok(String::new())
             }
         }, // Add comma here
         "upper" => Ok(args
@@ -87,7 +86,7 @@ pub fn apply_function(
                 ));
                 Ok(args.first().cloned().unwrap_or_default())
             }
-        }, // Add comma here
+        } // Add comma here
         "substr" => {
             if args.len() < 2 {
                 logger.warning(&format!(
@@ -112,7 +111,7 @@ pub fn apply_function(
                 }
             }
             Ok(target.chars().skip(start).collect())
-        }, // Add comma here
+        } // Add comma here
         "random" => {
             if args.is_empty() {
                 logger.warning(&format!(
@@ -203,15 +202,28 @@ pub fn apply_function(
                     Ok(String::new())
                 }
             }
-        }, // Add comma here
+        } // Add comma here
+        "choose_random" => {
+            if args.is_empty() {
+                logger.warning(&format!(
+                    "Warning: choose_random function requires at least one argument."
+                ));
+                return Ok(String::new());
+            }
+            let index = rng().random_range(0..args.len());
+            Ok(args[index].clone())
+        } // Add comma here
         // Default: if function is not known
         _ => {
             // Check context first in case it's a defined variable
-             if let Some(value) = context.get(name) {
-                 return Ok(value.clone());
-             }
+            if let Some(value) = context.get(name) {
+                return Ok(value.clone());
+            }
             // If not in context and not a known function, it's an error (handled by validator, but log here too)
-            logger.warning(&format!("Warning: Unknown function or undefined variable '{}' called.", name));
+            logger.warning(&format!(
+                "Warning: Unknown function or undefined variable '{}' called.",
+                name
+            ));
             Ok(String::new()) // Or return Err(...)
         }
     }
@@ -234,12 +246,11 @@ pub fn render_ast_node(
         } => {
             // 1. Check if it's a variable reference (no args, no def_name)
             if args.is_empty() && def_name.is_none() {
-                 // Try context first
+                // Try context first
+                // Try context first (for defined variables like 'pass')
                 if let Some(value) = context.get(name) {
                     return Ok(value.clone());
                 }
-                // If not in context, fall through to treat as potential zero-arg function call
-                // The validator should have already caught undefined variables.
             }
 
             // 2. Render arguments recursively
@@ -280,8 +291,18 @@ pub fn render_ast_node(
 /// Returns a HashSet containing the names of all built-in template functions.
 pub fn get_builtin_function_names() -> HashSet<String> {
     [
-        "username", "password", "qqid", "email", "cn_mobile",
-        "base64", "upper", "lower", "replace", "substr", "random",
+        "username",
+        "password",
+        "qqid",
+        "email",
+        "cn_mobile",
+        "base64",
+        "upper",
+        "lower",
+        "replace",
+        "substr",
+        "random",
+        "choose_random",
     ]
     .iter()
     .map(|&s| s.to_string())
