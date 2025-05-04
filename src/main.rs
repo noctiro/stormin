@@ -44,7 +44,5 @@ async fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("Error during pre-shutdown cleanup: {}", e);
     }
 
-    eprintln!("Main function finished. Relying on OS for task cleanup.");
-
     run_result
 }

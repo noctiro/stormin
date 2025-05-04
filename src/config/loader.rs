@@ -3,6 +3,8 @@ use pest_derive::Parser;
 use serde::Deserialize;
 use std::{error::Error, fs, num::NonZeroUsize};
 
+use super::validator::ConfigError;
+
 // --- Pest Parser Setup ---
 
 #[derive(Parser)]
@@ -35,6 +37,7 @@ pub struct RawConfig {
     pub targets: Vec<RawTarget>,
 }
 
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawTarget {
     pub url: String,
@@ -54,24 +57,28 @@ pub struct ProxyConfig {
 }
 
 impl ProxyConfig {
-    pub fn parse(line: &str) -> Option<Self> {
+    pub fn parse(line: &str) -> Result<Self, ConfigError> {
         let line = line.trim();
         if line.is_empty() {
-            return None;
+            return Err(ConfigError::ProxyParseError("Empty proxy line".into()));
         }
 
-        // 首先尝试解析为完整URL格式
+        // First try to parse as full URL format
         if let Ok(url) = url::Url::parse(line) {
             let scheme = url.scheme().to_string();
-            let host = url.host_str()?.to_string();
-            let port = url.port_or_known_default()?;
+            let host = url.host_str().ok_or_else(|| {
+                ConfigError::ProxyParseError(format!("Missing host in proxy URL: {}", line))
+            })?.to_string();
+            let port = url.port_or_known_default().ok_or_else(|| {
+                ConfigError::ProxyParseError(format!("Missing port in proxy URL: {}", line))
+            })?;
             let username = if !url.username().is_empty() {
                 Some(url.username().to_string())
             } else {
                 None
             };
             let password = url.password().map(|s| s.to_string());
-            return Some(ProxyConfig {
+            return Ok(ProxyConfig {
                 scheme,
                 host,
                 port,
@@ -97,17 +104,23 @@ impl ProxyConfig {
 
         let host_port_parts: Vec<&str> = host_port.split(':').collect();
         if host_port_parts.len() != 2 {
-            return None;
+            return Err(ConfigError::ProxyParseError(
+                format!("Invalid host:port format in proxy: {}", host_port)
+            ));
         }
 
         let host = host_port_parts[0].to_string();
-        let port: u16 = host_port_parts[1].parse().ok()?;
+        let port: u16 = host_port_parts[1].parse().map_err(|e| {
+            ConfigError::ProxyParseError(
+                format!("Invalid port '{}' in proxy: {}", host_port_parts[1], e)
+            )
+        })?;
         let (username, password) = match auth {
             Some((user, pass)) => (Some(user.to_string()), Some(pass.to_string())),
             None => (None, None),
         };
 
-        Some(ProxyConfig {
+        Ok(ProxyConfig {
             scheme: "http".to_string(), // 默认使用HTTP协议
             host,
             port,
@@ -129,7 +142,7 @@ pub struct AttackConfig {
 #[derive(Clone, Debug)]
 pub struct CompiledTarget {
     pub url: String,
-    pub method: String,
+    pub method: reqwest::Method,
     pub headers: std::collections::HashMap<String, String>,
     pub params: Vec<(String, TemplateAstNode)>,
 }
@@ -137,20 +150,17 @@ pub struct CompiledTarget {
 // --- Parsing Logic ---
 
 // Parses a template string into an AST using Pest
-fn parse_template_string(input: &str) -> Result<TemplateAstNode, pest::error::Error<Rule>> {
+fn parse_template_string(input: &str) -> Result<TemplateAstNode, ConfigError> {
     // Need to specify the Rule type for the parser
-    let pairs = TemplateParser::parse(Rule::template, input)?;
+    let pairs = TemplateParser::parse(Rule::template, input)
+        .map_err(|e| ConfigError::TemplateParseError(e.to_string()))?;
     // We expect a single 'template' rule match at the top level
     let top_pair = pairs.peek().ok_or_else(|| {
-        // Create a custom error if parsing returns no pairs (shouldn't happen on success)
-        pest::error::Error::new_from_span(
-            pest::error::ErrorVariant::CustomError {
-                message: "Empty parse result".to_string(),
-            },
-            pest::Span::new(input, 0, 0).unwrap(), // Span covering the beginning
-        )
+        ConfigError::TemplateParseError("Empty parse result".into())
     })?;
-    Ok(build_ast_from_pair(top_pair)?)
+    build_ast_from_pair(top_pair).map_err(|e| {
+        ConfigError::TemplateParseError(format!("Failed to build AST: {}", e))
+    })
 }
 
 // Recursively builds the AST from Pest parse pairs
@@ -229,6 +239,11 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
     let content = fs::read_to_string(path)?;
     let raw: RawConfig = toml::from_str(&content)?;
 
+    // 检查是否存在目标配置
+    if raw.targets.is_empty() {
+        return Err(ConfigError::NoTargets.into());
+    }
+
     // 读取代理文件并筛选
     let mut proxies = Vec::new();
     if let Some(proxy_path_str) = &raw.proxy_file {
@@ -241,8 +256,9 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
                     if line.is_empty() || line.starts_with('#') {
                         continue;
                     }
-                    if let Some(proxy) = ProxyConfig::parse(line) {
-                        proxies.push(proxy);
+                    match ProxyConfig::parse(line) {
+                        Ok(proxy) => proxies.push(proxy),
+                        Err(e) => eprintln!("Invalid proxy configuration '{}': {}", line, e),
                     }
                 }
             } else {
@@ -257,7 +273,7 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
     // 处理线程数，默认为 CPU 核数 * 4
     let threads = if let Some(t) = raw.threads {
         if t < 1 {
-            return Err("Config error: threads must be at least 1".into());
+            return Err(ConfigError::InvalidThreadCount.into());
         }
         t
     } else {
@@ -269,7 +285,7 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
 
     let timeout = if let Some(t) = raw.timeout {
         if t <= 0 {
-            return Err("Config error: timeout must be at least 0".into());
+            return Err(ConfigError::InvalidTimeoutValue.into());
         }
         t
     } else {
@@ -278,18 +294,44 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
 
     let mut compiled: Vec<CompiledTarget> = Vec::new();
     for raw_t in raw.targets {
+        // 使用更严格的验证逻辑
+        if let Err(e) = super::validator::validate_target(&raw_t) {
+            eprintln!("[Configuration verification failed] Target '{}' was removed: {}", raw_t.url, e);
+            continue;
+        }
+
         let mut params = Vec::new();
         if let Some(map) = raw_t.params {
             for (k, v) in map {
                 params.push((k, parse_template_string(&v)?));
             }
         }
+        let method = match raw_t.method.as_deref().unwrap_or("GET").to_uppercase().as_str() {
+            "GET" => reqwest::Method::GET,
+            "POST" => reqwest::Method::POST,
+            "PUT" => reqwest::Method::PUT,
+            "DELETE" => reqwest::Method::DELETE,
+            "HEAD" => reqwest::Method::HEAD,
+            "OPTIONS" => reqwest::Method::OPTIONS,
+            "PATCH" => reqwest::Method::PATCH,
+            "TRACE" => reqwest::Method::TRACE,
+            m => {
+                eprintln!("Skipping invalid target '{}': Invalid HTTP method {}", raw_t.url, m);
+                continue;
+            }
+        };
+
         compiled.push(CompiledTarget {
             url: raw_t.url,
-            method: raw_t.method.unwrap_or_else(|| "GET".into()),
+            method,
             headers: raw_t.headers.unwrap_or_default(),
             params,
         });
+    }
+
+    // Check again after validation filtering
+    if compiled.is_empty() {
+        return Err(ConfigError::NoTargets.into());
     }
 
     Ok(AttackConfig {

@@ -5,6 +5,7 @@ license = "MIT"
 edition = "2024"
 
 [dependencies]
+dashmap = "6.1.0"
 rand = "0.9.1"
 serde = { version = "1.0.219", features = ["derive"] }
 toml = "0.8.22"

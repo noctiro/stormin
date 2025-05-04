@@ -1,5 +1,5 @@
 use crate::{
-    config::TemplateAstNode,
+    config::loader::TemplateAstNode,
     generator::{email::generate_email, password::generate_password, qqid::generate_qq_id, username::generate_username},
     logger::Logger,
 };
