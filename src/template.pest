@@ -5,7 +5,12 @@ template = { SOI ~ (expression | static_text)* ~ EOI }
 
 // Expression = ${ identifier [: arguments ] }
 // Allows ${fn}, ${fn:}, ${fn:arg1,...}
-expression = { "${" ~ identifier ~ arguments? ~ "}" }
+// Updated Expression = ${ <identifier> [ (: <def_name> ) ] [ : <arguments> ] }
+// Allows ${func}, ${func:arg}, ${func(:name)}, ${func(:name):arg}, ${var}
+expression = { "${" ~ identifier ~ definition? ~ arguments? ~ "}" }
+
+// Definition = (: identifier ) - for named variable declaration
+definition = { "(:" ~ identifier ~ ")" }
 
 // Arguments = : [ arg1 [, arg2, ...] ] (optional list after colon)
 // Allows the colon alone for zero arguments.

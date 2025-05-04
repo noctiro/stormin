@@ -18,6 +18,7 @@ struct TemplateParser;
 pub enum TemplateAstNode {
     Static(String),
     FunctionCall {
+        def_name: Option<String>, // Added: Optional name for variable definition
         name: String,
         args: Vec<TemplateAstNode>,
     },
@@ -177,22 +178,34 @@ fn build_ast_from_pair(
 
         Rule::expression => {
             let mut inner_rules = pair.into_inner();
-            let identifier_pair = inner_rules.next().unwrap(); // function or variable name
+            let identifier_pair = inner_rules.next().expect("Expression must have an identifier");
             let name = identifier_pair.as_str().to_string();
 
-            if let Some(args_pair) = inner_rules.next() {
-                let args = args_pair
-                    .into_inner()
-                    .map(build_ast_from_pair)
-                    .collect::<Result<Vec<TemplateAstNode>, pest::error::Error<Rule>>>()?;
-                Ok(TemplateAstNode::FunctionCall { name, args })
-            } else {
-                // Support identifier without arguments: treat as function call with empty arguments
-                Ok(TemplateAstNode::FunctionCall {
-                    name,
-                    args: Vec::new(),
-                })
+            let mut def_name: Option<String> = None;
+            let mut args: Vec<TemplateAstNode> = Vec::new();
+
+            // Check for optional definition first
+            if let Some(next_pair) = inner_rules.peek() {
+                if next_pair.as_rule() == Rule::definition {
+                    let def_pair = inner_rules.next().unwrap();
+                    // The definition rule contains the identifier for the name
+                    def_name = Some(def_pair.into_inner().next().unwrap().as_str().to_string());
+                }
             }
+
+            // Check for optional arguments
+            if let Some(args_pair) = inner_rules.next() {
+                 if args_pair.as_rule() == Rule::arguments {
+                     args = args_pair.into_inner().map(build_ast_from_pair).collect::<Result<_,_>>()?;
+                 }
+            }
+
+            // Create the node, including the optional definition name
+                 Ok(TemplateAstNode::FunctionCall {
+                     def_name,
+                     name,
+                     args, // Use parsed args
+                 })
         }
 
         Rule::argument => build_ast_from_pair(pair.into_inner().next().unwrap()),
@@ -238,6 +251,9 @@ fn build_ast_from_pair(
 pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error>> {
     let content = fs::read_to_string(path)?;
     let raw: RawConfig = toml::from_str(&content)?;
+
+    // Get the set of built-in function names from the template module
+    let builtin_functions = crate::template::get_builtin_function_names();
 
     // 检查是否存在目标配置
     if raw.targets.is_empty() {
@@ -293,20 +309,49 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
     };
 
     let mut compiled: Vec<CompiledTarget> = Vec::new();
-    for raw_t in raw.targets {
+    'target_loop: for raw_t in raw.targets { // Add a label to the outer loop
         // 使用更严格的验证逻辑
         if let Err(e) = super::validator::validate_target(&raw_t) {
             eprintln!("[Configuration verification failed] Target '{}' was removed: {}", raw_t.url, e);
             continue;
         }
 
-        let mut params = Vec::new();
+        let mut parsed_params = Vec::new(); // Temporary storage for parsed params
+        let mut target_has_error = false; // Flag for validation errors
+
         if let Some(map) = raw_t.params {
             for (k, v) in map {
-                params.push((k, parse_template_string(&v)?));
+                // Parse the template string into AST
+                match parse_template_string(&v) {
+                    Ok(ast_node) => {
+                        parsed_params.push((k.clone(), ast_node)); // Store key and AST
+                    }
+                    Err(e) => {
+                        eprintln!("[Configuration verification failed] Target '{}', Param '{}': Failed to parse template: {}", raw_t.url, k, e);
+                        target_has_error = true;
+                        break; // Stop processing params for this target if parsing fails
+                    }
+                };
             }
         }
+
+        // If parsing succeeded, perform target-level validation
+        if !target_has_error {
+             if let Err(e) = super::validator::validate_target_templates(&parsed_params, &builtin_functions) {
+                 eprintln!("[Configuration verification failed] Target '{}': {}", raw_t.url, e);
+                 target_has_error = true;
+             }
+        }
+
+        // If any parsing or validation error occurred, skip this target
+        if target_has_error {
+            eprintln!("[Configuration verification failed] Skipping Target '{}' due to errors.", raw_t.url);
+            continue 'target_loop; // Continue to the next target
+        }
+
+        // If everything is valid, proceed
         let method = match raw_t.method.as_deref().unwrap_or("GET").to_uppercase().as_str() {
+            // ... (rest of method matching remains the same)
             "GET" => reqwest::Method::GET,
             "POST" => reqwest::Method::POST,
             "PUT" => reqwest::Method::PUT,
@@ -325,7 +370,7 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
             url: raw_t.url,
             method,
             headers: raw_t.headers.unwrap_or_default(),
-            params,
+            params: parsed_params, // Use the validated parsed_params
         });
     }
 
@@ -341,3 +386,4 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
         proxies,
     })
 }
+

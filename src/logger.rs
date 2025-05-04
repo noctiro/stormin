@@ -84,7 +84,6 @@ impl Logger {
                     if failures % 100 == 0 {
                         let last = LAST_WARNING.load(Ordering::Relaxed);
                         if now - last > 5000 { // 5 seconds
-                            eprintln!("WARNING: Log channel full - dropped {} messages", failures);
                             LAST_WARNING.store(now, Ordering::Relaxed);
                         }
                     }

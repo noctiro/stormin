@@ -26,6 +26,7 @@ pub struct TargetStats {
     pub failure: u64,
     pub last_success_time: Option<Instant>,
     pub last_failure_time: Option<Instant>,
+    pub last_network_error: Option<String>, // 新增：存储最后的网络错误信息
 }
 
 #[derive(Clone, Debug)] // Add Clone and Debug derives
@@ -391,7 +392,7 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
                     0.0
                 };
 
-                vec![
+                let mut lines = vec![
                     Line::from(vec![
                         Span::styled("URL: ", Style::default().fg(Color::Gray)),
                         Span::styled(&t.url, Style::default().fg(Color::Cyan)),
@@ -413,10 +414,32 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
                         Span::styled("Last Success: ", Style::default().fg(Color::Gray)),
                         Span::styled(last_success, Style::default().fg(Color::Green)),
                         Span::raw("  Last Failure: "),
-                        Span::styled(last_failure, Style::default().fg(Color::Red)),
+                        Span::styled(last_failure.clone(), Style::default().fg(Color::Red)), // Use clone here if needed later
                     ]),
-                    Line::default(),
-                ]
+                ];
+
+                // 如果存在最后的网络错误，并且最后一次失败就是这次网络错误（或没有失败记录），则显示它
+                if let Some(error_msg) = &t.last_network_error {
+                     // 只在最近一次失败是网络错误时显示，避免显示过时的网络错误
+                    if t.last_failure_time.is_some() && t.last_network_error.is_some() {
+                        // 检查时间戳是否足够接近？（或者简单地总是显示最新的网络错误）
+                        // 简单起见，我们总是显示最新的网络错误，如果存在的话
+                        lines.push(Line::from(vec![
+                           Span::styled("  └─ Last Error: ", Style::default().fg(Color::DarkGray)),
+                           Span::styled(error_msg, Style::default().fg(Color::LightRed)),
+                        ]));
+                    } else if t.last_network_error.is_some() { // 如果没有失败记录但有网络错误
+                         lines.push(Line::from(vec![
+                           Span::styled("  └─ Last Error: ", Style::default().fg(Color::DarkGray)),
+                           Span::styled(error_msg, Style::default().fg(Color::LightRed)),
+                        ]));
+                    }
+
+                }
+
+
+                lines.push(Line::default()); // Add the empty line separator
+                lines // Return the vector of lines
             })
             .collect();
 

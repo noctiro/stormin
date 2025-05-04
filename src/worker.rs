@@ -5,6 +5,7 @@ use rand::rngs::{SmallRng, ThreadRng};
 use rand::seq::IndexedRandom;
 use rand::{Rng, SeedableRng};
 use reqwest::{Client, Method};
+use std::collections::HashMap;
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
@@ -23,7 +24,8 @@ pub struct TargetUpdate {
     pub url: String,
     pub success: bool,
     pub timestamp: Instant,
-    pub debug: Option<String>,
+    pub debug: Option<String>, // Full debug message for logging
+    pub network_error: Option<String>, // Specific error for UI display when request fails early 响应前失败
 }
 
 struct RequestBuffer {
@@ -156,9 +158,25 @@ pub async fn worker_loop(
 
                         // 构建请求参数
                         buffer.clear();
+                        // Create a fresh context for each request task
+                        let mut context = HashMap::new();
                         for (key, template) in &target.params {
-                            let value_string = render_ast_node(template, logger.clone());
-                            buffer.params_vec.push((key.clone(), value_string));
+                            // Render the value, passing the mutable context
+                            let value_result =
+                                render_ast_node(template, &mut context, logger.clone());
+                            match value_result {
+                                Ok(value_string) => {
+                                    buffer.params_vec.push((key.clone(), value_string));
+                                }
+                                Err(e) => {
+                                    logger.warning(&format!(
+                                        "Worker {:?}: Failed to render template for param '{}' in target '{}': {}. Skipping param.",
+                                        thread_id, key, target.url, e
+                                    ));
+                                    // Optionally push an empty string or skip entirely
+                                    // buffer.params_vec.push((key.clone(), String::new()));
+                                }
+                            }
                         }
 
                         // 根据方法添加参数
@@ -178,37 +196,54 @@ pub async fn worker_loop(
                         }
 
                         // 发送请求并处理结果
+                        let start_time = Instant::now();
                         let res = req.send().await;
-                        let success = res
-                            .as_ref()
-                            .map(|r| r.status().is_success())
-                            .unwrap_or(false);
+                        let timestamp = Instant::now();
+                        let duration = timestamp.duration_since(start_time);
 
-                        // 发送统计信息到UI
-                        let update = TargetUpdate {
-                            url: target.url.clone(),
-                            success,
-                            timestamp: Instant::now(),
-                            debug: None,
+                        let (success, status_code, error_details) = match res {
+                            Ok(response) => {
+                                let success = response.status().is_success();
+                                let status = response.status();
+                                // Optionally read body for more details, but be careful with large responses
+                                // let body_text = response.text().await.unwrap_or_else(|e| format!("Error reading body: {}", e));
+                                (success, Some(status), None) // Store status code
+                            }
+                            Err(e) => {
+                                // Request failed before getting a response
+                                (false, None, Some(e.to_string())) // Store error string
+                            }
                         };
-                        if let Err(e) = stats_tx.send(update).await {
-                            logger.warning(&format!("Failed to send stats update: {}", e));
-                        }
 
-                        // 构建调试信息并发送到UI线程
-                        let debug_info = format!(
-                            "[Request]\nURL: {}\nMethod: {}\nParams: {}\nStatus: {}",
+                        let debug_message = format!(
+                            "[Request Debug]\nURL: {}\nMethod: {}\nDuration: {:?}\nStatus: {}\nParams: {}\nError: {}",
                             target.url,
                             target.method,
+                            duration,
+                            status_code.map_or_else(|| "N/A".to_string(), |s| s.to_string()),
                             buffer
                                 .params_vec
                                 .iter()
                                 .map(|(k, v)| format!("{}={}", k, v))
                                 .collect::<Vec<_>>()
                                 .join("&"),
-                            if success { "Success" } else { "Failed" }
+                            error_details.as_deref().unwrap_or("None")
                         );
-                        logger.debug(&debug_info);
+                        logger.debug(&debug_message); // Log detailed debug info regardless of success
+
+                        // 发送统计信息到UI
+                        let update = TargetUpdate {
+                            url: target.url.clone(),
+                            success,
+                            timestamp,
+                            // Pass the detailed debug message to the stats channel
+                            debug: Some(debug_message),
+                            // Populate network_error only if the request failed before getting a status
+                            network_error: error_details, // error_details is Some(String) only on Err(e)
+                        };
+                        if let Err(e) = stats_tx.send(update).await {
+                            logger.warning(&format!("Failed to send stats update: {}", e));
+                        }
                     }
                     WorkerMessage::Resume => {}
                 }

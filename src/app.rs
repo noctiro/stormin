@@ -58,6 +58,7 @@ impl App {
                     failure: 0,
                     last_success_time: None,
                     last_failure_time: None,
+                    last_network_error: None, // 初始化新增字段
                 })
                 .collect(),
             threads: Vec::new(),
@@ -120,11 +121,12 @@ impl App {
         let handle = thread::spawn(move || {
             logger_clone.info("Log receiver thread started.");
             while let Some(log_entry) = log_rx.blocking_recv() {
-                let update = TargetUpdate {
+                let update = TargetUpdate { // Ensuring this initialization is correct
                     url: String::new(),
                     success: false,
                     timestamp: log_entry.timestamp,
                     debug: Some(log_entry.message),
+                    network_error: None, // Explicitly adding the field here again
                 };
                 if debug_logs_tx.blocking_send(update).is_err() {
                     eprintln!("Log receiver failed to send to UI channel, exiting.");
@@ -236,6 +238,15 @@ impl App {
                             target.failure += 1;
                             target.last_failure_time = Some(update.timestamp);
                         }
+                        // 更新最后的网络错误信息
+                        // 如果本次更新包含网络错误，则记录它
+                        // 如果本次更新是失败但*没有*网络错误（例如HTTP 4xx/5xx），则清除之前的网络错误记录
+                        if let Some(network_err) = update.network_error {
+                            target.last_network_error = Some(network_err);
+                        } else if !update.success {
+                             target.last_network_error = None; // 清除旧的网络错误（如果是HTTP失败）
+                        }
+                        // 如果是成功，则保留之前的 network_error 状态（可能是None或之前的错误）
                     }
                 }
             }
