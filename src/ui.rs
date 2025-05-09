@@ -26,7 +26,7 @@ pub struct TargetStats {
     pub failure: u64,
     pub last_success_time: Option<Instant>,
     pub last_failure_time: Option<Instant>,
-    pub last_network_error: Option<String>, // 新增：存储最后的网络错误信息
+    pub last_network_error: Option<String>, // 存储最后的网络错误信息
 }
 
 #[derive(Clone, Debug)] // Add Clone and Debug derives
@@ -422,8 +422,7 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
                 if let Some(error_msg) = &t.last_network_error {
                      // 只在最近一次失败是网络错误时显示，避免显示过时的网络错误
                     if t.last_failure_time.is_some() && t.last_network_error.is_some() {
-                        // 检查时间戳是否足够接近？（或者简单地总是显示最新的网络错误）
-                        // 简单起见，我们总是显示最新的网络错误，如果存在的话
+                        // 显示最新的网络错误
                         lines.push(Line::from(vec![
                            Span::styled("  └─ Last Error: ", Style::default().fg(Color::DarkGray)),
                            Span::styled(error_msg, Style::default().fg(Color::LightRed)),

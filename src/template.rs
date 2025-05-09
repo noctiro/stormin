@@ -3,8 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     config::loader::TemplateAstNode,
     generator::{
-        cn_mobile::generate_cn_mobile, email::generate_email, password::generate_password,
-        qqid::generate_qq_id, username::generate_username,
+        chinese_bank_card::generate_chinese_bank_card, chinese_id::generate_chinese_id, chinese_name::generate_chinese_name, cn_mobile::generate_cn_mobile, email::generate_email, ip::{generate_ipv4, generate_ipv6}, password::generate_password, qqid::generate_qq_id, username::generate_username
     },
     logger::Logger,
 };
@@ -62,6 +61,46 @@ pub fn apply_function(
                 ));
             }
             Ok(generate_cn_mobile(&mut rng()))
+        }
+        "chinese_name" => {
+            if !args.is_empty() {
+                logger.warning(&format!(
+                    "Warning: chinese_name function does not take arguments."
+                ));
+            }
+            Ok(generate_chinese_name(&mut rng()))
+        }
+        "chinese_id" => {
+            if !args.is_empty() {
+                logger.warning(&format!(
+                    "Warning: chinese_id function does not take arguments."
+                ));
+            }
+            Ok(generate_chinese_id(&mut rng()))
+        }
+        "chinese_bank_card" => {
+            if !args.is_empty() {
+                logger.warning(&format!(
+                    "Warning: chinese_bank_card function does not take arguments."
+                ));
+            }
+            Ok(generate_chinese_bank_card(&mut rng()))
+        }
+        "ipv4" => {
+            if !args.is_empty() {
+                logger.warning(&format!(
+                    "Warning: ipv4 function does not take arguments."
+                ));
+            }
+            Ok(generate_ipv4(&mut rng()))
+        }
+        "ipv6" => {
+            if !args.is_empty() {
+                logger.warning(&format!(
+                    "Warning: ipv6 function does not take arguments."
+                ));
+            }
+            Ok(generate_ipv6(&mut rng()))
         }
         "base64" => match args.first() {
             Some(arg) => Ok(STANDARD.encode(arg)),
@@ -291,11 +330,6 @@ pub fn render_ast_node(
 /// Returns a HashSet containing the names of all built-in template functions.
 pub fn get_builtin_function_names() -> HashSet<String> {
     [
-        "username",
-        "password",
-        "qqid",
-        "email",
-        "cn_mobile",
         "base64",
         "upper",
         "lower",
@@ -303,6 +337,16 @@ pub fn get_builtin_function_names() -> HashSet<String> {
         "substr",
         "random",
         "choose_random",
+        "username",
+        "password",
+        "qqid",
+        "email",
+        "cn_mobile",
+        "chinese_name",
+        "chinese_id",
+        "chinese_bank_card",
+        "ipv4",
+        "ipv6",
     ]
     .iter()
     .map(|&s| s.to_string())
