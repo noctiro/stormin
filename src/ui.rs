@@ -134,8 +134,10 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
             RunningState::Stopping => Color::Red,
         };
 
+        let version = env!("CARGO_PKG_VERSION");
         let title = format!(
-            "Stormin Attack Dashboard {} | Proxies: {} [Press P:Pause R:Resume Q:Quit]",
+            "Stormin Attack Dashboard v{} {} | Proxies: {} [Press P:Pause R:Resume Q:Quit]",
+            version,
             match stats.running_state {
                 RunningState::Running => "[Running]",
                 RunningState::Paused => "[Paused]",

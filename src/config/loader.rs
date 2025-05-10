@@ -1,5 +1,6 @@
 use pest::Parser;
 use pest_derive::Parser;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::Deserialize;
 use std::{error::Error, fs, num::NonZeroUsize};
 
@@ -144,7 +145,7 @@ pub struct AttackConfig {
 pub struct CompiledTarget {
     pub url: String,
     pub method: reqwest::Method,
-    pub headers: std::collections::HashMap<String, String>,
+    pub headers: HeaderMap,
     pub params: Vec<(String, TemplateAstNode)>,
 }
 
@@ -353,6 +354,15 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
                  target_has_error = true;
              }
         }
+        
+        let mut headers = HeaderMap::new();
+        if !target_has_error {
+            for (key, value) in &raw_t.headers.unwrap_or_default() {
+                let header_name = HeaderName::from_bytes(key.as_bytes())?;
+                let header_value = HeaderValue::from_str(&value)?;
+                headers.append(header_name, header_value);
+            }
+        }
 
         // If any parsing or validation error occurred, skip this target
         if target_has_error {
@@ -380,7 +390,7 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
         compiled.push(CompiledTarget {
             url: raw_t.url,
             method,
-            headers: raw_t.headers.unwrap_or_default(),
+            headers,
             params: parsed_params, // Use the validated parsed_params
         });
     }

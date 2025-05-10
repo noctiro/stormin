@@ -1,5 +1,10 @@
 use rand::RngCore;
 
+// Lookup table to replace `% 10` for 4-bit values (0–15)
+const MOD_10_TABLE: [u8; 16] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5
+];
+
 // Mobile prefix segments for all Chinese carriers, stored as u16 for memory efficiency
 static PREFIX_SEGMENTS: [u16; 53] = [
     130, 131, 132, 133, 134, 135, 136, 137, 138, 139,
@@ -37,24 +42,19 @@ pub fn generate_cn_mobile<T: RngCore>(rng: &mut T) -> String {
     buffer[1] = (prefix / 10 % 10) as u8 + ASCII_ZERO;
     buffer[2] = (prefix % 10) as u8 + ASCII_ZERO;
     
-    // Generate two 32-bit random numbers for the remaining 8 digits
-    // Each random number provides enough entropy for 4 digits
-    let rand1 = rng.next_u32();
-    let rand2 = rng.next_u32();
-    
-    // Fill remaining 8 digits using bitwise operations
-    // Each operation extracts a single decimal digit (0-9) using modulo 10
-    // This method avoids division and multiplication operations
-    buffer[3] = (rand1 & 0xF) as u8 % 10 + ASCII_ZERO;
-    buffer[4] = ((rand1 >> 4) & 0xF) as u8 % 10 + ASCII_ZERO;
-    buffer[5] = ((rand1 >> 8) & 0xF) as u8 % 10 + ASCII_ZERO;
-    buffer[6] = ((rand1 >> 12) & 0xF) as u8 % 10 + ASCII_ZERO;
-    buffer[7] = ((rand1 >> 16) & 0xF) as u8 % 10 + ASCII_ZERO;
-    buffer[8] = (rand2 & 0xF) as u8 % 10 + ASCII_ZERO;
-    buffer[9] = ((rand2 >> 4) & 0xF) as u8 % 10 + ASCII_ZERO;
-    buffer[10] = ((rand2 >> 8) & 0xF) as u8 % 10 + ASCII_ZERO;
+    // Generate 8 digits from a single u64
+    let mut rand = rng.next_u64();
+
+    for i in 3..11 {
+        buffer[i] = MOD_10_TABLE[(rand & 0xF) as usize] + ASCII_ZERO;
+        rand >>= 4;
+    }
     
     // Directly convert buffer to String, skipping UTF-8 validation
     // Safe because we only use ASCII digits 0-9
-    unsafe { String::from_utf8_unchecked(buffer.to_vec()) }
+    unsafe {
+        // Allocate String manually without intermediate Vec
+        let boxed = Box::new(buffer); // move stack array to heap
+        String::from_raw_parts(Box::into_raw(boxed) as *mut u8, 11, 11)
+    }
 }

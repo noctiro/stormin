@@ -58,7 +58,7 @@ impl App {
                     failure: 0,
                     last_success_time: None,
                     last_failure_time: None,
-                    last_network_error: None, // 初始化新增字段
+                    last_network_error: None,
                 })
                 .collect(),
             threads: Vec::new(),

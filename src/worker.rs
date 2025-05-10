@@ -24,9 +24,9 @@ pub struct TargetUpdate {
     pub url: String,
     pub success: bool,
     pub timestamp: Instant,
-    pub debug: Option<String>, // Full debug message for logging
+    pub debug: Option<String>,         // Full debug message for logging
     pub network_error: Option<String>, // Specific error for UI display when request fails early 响应前失败
-    pub thread_id: ThreadId, // Add ThreadId
+    pub thread_id: ThreadId,           // Add ThreadId
 }
 
 struct RequestBuffer {
@@ -153,9 +153,7 @@ pub async fn worker_loop(
                         let mut req = client.request(target.method.clone(), &target.url);
 
                         // 添加headers
-                        for (key, value) in &target.headers {
-                            req = req.header(key, value);
-                        }
+                        req = req.headers(target.headers.clone());
 
                         // 构建请求参数
                         buffer.clear();
@@ -182,7 +180,7 @@ pub async fn worker_loop(
 
                         // 根据方法添加参数
                         match target.method {
-                            Method::GET | Method::DELETE => {
+                            Method::GET | Method::DELETE | Method::OPTIONS => {
                                 req = req.query(&buffer.params_vec);
                             }
                             Method::POST | Method::PUT | Method::PATCH => {
@@ -217,18 +215,25 @@ pub async fn worker_loop(
                         };
 
                         let debug_message = format!(
-                            "[Request Debug]\nURL: {}\nMethod: {}\nDuration: {:?}\nStatus: {}\nParams: {}\nError: {}",
+                            "[Request Debug]\nURL: {}\nMethod: {}\nDuration: {:?}\nStatus: {}{}{}",
                             target.url,
                             target.method,
                             duration,
                             status_code.map_or_else(|| "N/A".to_string(), |s| s.to_string()),
-                            buffer
-                                .params_vec
-                                .iter()
-                                .map(|(k, v)| format!("{}={}", k, v))
-                                .collect::<Vec<_>>()
-                                .join("&"),
-                            error_details.as_deref().unwrap_or("None")
+                            if !buffer.params_vec.is_empty() {
+                                format!(
+                                    "\nParams: {}",
+                                    buffer
+                                        .params_vec
+                                        .iter()
+                                        .map(|(k, v)| format!("{}={}", k, v))
+                                        .collect::<Vec<_>>()
+                                        .join("&")
+                                )
+                            } else {
+                                String::new()
+                            },
+                            error_details.as_ref().map(|err| format!("\nError: {}", err)).unwrap_or_default()
                         );
                         logger.debug(&debug_message); // Log detailed debug info regardless of success
 
@@ -241,7 +246,7 @@ pub async fn worker_loop(
                             debug: Some(debug_message),
                             // Populate network_error only if the request failed before getting a status
                             network_error: error_details, // error_details is Some(String) only on Err(e)
-                            thread_id, // Include thread_id
+                            thread_id,                    // Include thread_id
                         };
                         if let Err(e) = stats_tx.send(update).await {
                             logger.warning(&format!("Failed to send stats update: {}", e));
@@ -257,9 +262,7 @@ pub async fn worker_loop(
                 ));
                 break 'main_loop;
             }
-            Err(broadcast::error::RecvError::Lagged(n)) => {
-                logger.warning(&format!("Worker {:?} lagged by {} messages.", thread_id, n));
-            }
+            Err(broadcast::error::RecvError::Lagged(_)) => {}
         }
     }
 

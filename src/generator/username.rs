@@ -365,6 +365,19 @@ pub fn generate_username<T: RngCore + Rng>(rng: &mut T) -> String {
         }
     }
 
+    // 1% chance to insert a random string at a random position
+    if rng.next_u32() % 100 == 0 {
+        let insert_len = 2 + (rng.next_u32() % 4) as usize; // 2~5 chars
+        let insert_str = insert_random_str(rng, insert_len);
+
+        let insert_pos = rng.next_u32() as usize % (result.len().saturating_add(1));
+        let mut new_result = String::with_capacity(result.len() + insert_len);
+        new_result.push_str(&result[..insert_pos]);
+        new_result.push_str(&insert_str);
+        new_result.push_str(&result[insert_pos..]);
+        result = new_result;
+    }
+    
     // Apply final capitalization efficiently
     apply_capitalization(&mut result, capitalize_mode);
     
@@ -426,4 +439,14 @@ fn apply_capitalization(s: &mut String, mode: u8) {
         },
         _ => {}, // Default - no change
     }
+}
+
+fn insert_random_str<T: RngCore>(rng: &mut T, len: usize) -> String {
+    const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let mut s = String::with_capacity(len);
+    for _ in 0..len {
+        let idx = (rng.next_u32() as usize) % CHARSET.len();
+        s.push(CHARSET[idx] as char);
+    }
+    s
 }
