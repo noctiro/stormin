@@ -53,6 +53,7 @@ impl App {
         let stats = Stats {
             targets: config.targets.iter()
                 .map(|t| TargetStats {
+                    id: t.id, // Copy the ID from CompiledTarget
                     url: t.url.clone(),
                     success: 0,
                     failure: 0,
@@ -115,8 +116,9 @@ impl App {
             logger_clone.info("Log receiver thread started.");
             while let Some(log_entry) = log_rx.blocking_recv() {
                 let update = TargetUpdate { // Ensuring this initialization is correct
+                    id: 0, // Default ID for log messages, not tied to a specific target. Relies on url.is_empty() check later.
                     url: String::new(), // Empty URL signifies a debug log, not a target result
-                    success: false,     // Not applicable for logs
+                    success: false,     // Not applicable for logs@
                     timestamp: log_entry.timestamp,
                     debug: Some(log_entry.message),
                     network_error: None, // Not applicable for logs
@@ -228,19 +230,25 @@ impl App {
                 }
 
                 // 更新目标统计
-                if let Some(target) = self.stats.targets.iter_mut().find(|t| t.url == update.url) {
-                    if update.success {
-                        target.success += 1;
-                        target.last_success_time = Some(update.timestamp);
+                // Find target by ID. The URL check for empty string is for debug messages.
+                if !update.url.is_empty() { // Only process if it's a target-specific update
+                    if let Some(target) = self.stats.targets.iter_mut().find(|t| t.id == update.id) {
+                        if update.success {
+                            target.success += 1;
+                            target.last_success_time = Some(update.timestamp);
+                        } else {
+                            target.failure += 1;
+                            target.last_failure_time = Some(update.timestamp);
+                        }
+                        // 更新最后的网络错误信息
+                        if let Some(network_err) = update.network_error {
+                            target.last_network_error = Some(network_err);
+                        } else if !update.success {
+                            target.last_network_error = None; // 清除旧的网络错误（如果是HTTP失败）
+                        }
                     } else {
-                        target.failure += 1;
-                        target.last_failure_time = Some(update.timestamp);
-                    }
-                    // 更新最后的网络错误信息
-                    if let Some(network_err) = update.network_error {
-                        target.last_network_error = Some(network_err);
-                    } else if !update.success {
-                         target.last_network_error = None; // 清除旧的网络错误（如果是HTTP失败）
+                        // This case should ideally not happen if IDs are managed correctly
+                        self.logger.warning(&format!("Received update for unknown target ID: {} for URL: {}", update.id, update.url));
                     }
                 }
 

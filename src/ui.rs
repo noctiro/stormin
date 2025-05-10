@@ -1,7 +1,9 @@
 use ratatui::{
     prelude::*,
     symbols,
-    widgets::{BarChart, Block, Borders, Gauge, LineGauge, Paragraph, Wrap},
+    widgets::{
+        BarChart, Block, BorderType, Borders, Cell, Gauge, LineGauge, Paragraph, Row, Table, Wrap, // Added Bar
+    },
 };
 use std::collections::VecDeque;
 use std::{thread, time::Instant};
@@ -21,6 +23,7 @@ pub struct ThreadStats {
 }
 
 pub struct TargetStats {
+    pub id: usize, // Unique ID for the target
     pub url: String,
     pub success: u64,
     pub failure: u64,
@@ -74,10 +77,10 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
                 Constraint::Length(3), // 标题和控制按钮
                 Constraint::Length(3), // 系统状态
                 Constraint::Length(3), // 计数器
-                Constraint::Length(6), // 请求统计图表
+                Constraint::Length(7), // 请求统计图表 (Increased height for labels)
                 Constraint::Length(3), // 进度条
-                Constraint::Length(8), // 线程状态
-                Constraint::Min(0),    // Target状态
+                Constraint::Min(5),    // 线程状态 (Min height, can expand)
+                Constraint::Percentage(60), // Target状态 (Takes a good portion of remaining space)
             ])
             .split(main_chunks[0]);
 
@@ -122,38 +125,54 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
         };
 
         let debug_widget = Paragraph::new(debug_messages)
-            .block(Block::default().title("Console").borders(Borders::ALL))
-            .wrap(Wrap { trim: false }) // 禁用自动换行，使用我们自己的换行逻辑
+            .block(
+                Block::default()
+                    .title(Span::styled(
+                        "Console",
+                        Style::default()
+                            .fg(Color::LightCyan)
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray)), // Added consistent border style
+            )
+            .wrap(Wrap { trim: false })
             .scroll(scroll);
         f.render_widget(debug_widget, debug_area);
 
         // 标题和状态
         let status_color = match stats.running_state {
-            RunningState::Running => Color::Green,
-            RunningState::Paused => Color::Yellow,
-            RunningState::Stopping => Color::Red,
+            RunningState::Running => Color::LightGreen,
+            RunningState::Paused => Color::LightYellow,
+            RunningState::Stopping => Color::LightRed,
         };
 
         let version = env!("CARGO_PKG_VERSION");
-        let title = format!(
-            "Stormin Attack Dashboard v{} {} | Proxies: {} [Press P:Pause R:Resume Q:Quit]",
+        let title_str = format!(
+            "Stormin Attack Dashboard v{} {} | Proxies: {} [P:Pause R:Resume Q:Quit]",
             version,
             match stats.running_state {
                 RunningState::Running => "[Running]",
                 RunningState::Paused => "[Paused]",
                 RunningState::Stopping => "[Stopping]",
             },
-            stats.proxy_count // Add proxy count here
+            stats.proxy_count
         );
 
-        let title = Paragraph::new(Text::styled(
-            title,
+        let title_widget = Paragraph::new(Text::styled(
+            title_str,
             Style::default()
                 .fg(status_color)
                 .add_modifier(Modifier::BOLD),
         ))
-        .block(Block::default().borders(Borders::ALL));
-        f.render_widget(title, chunks[0]);
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
+        f.render_widget(title_widget, chunks[0]);
 
         // 系统状态 - 添加CPU和内存使用率图表
         let sys_info_block = Layout::default()
@@ -164,7 +183,18 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
         // CPU使用率图表
         let cpu_ratio = (stats.cpu_usage as f64 / 100.0).clamp(0.0, 1.0);
         let cpu_gauge = LineGauge::default()
-            .block(Block::default().borders(Borders::ALL).title("CPU"))
+            .block(
+                Block::default()
+                    .title(Span::styled(
+                        "CPU Usage",
+                        Style::default()
+                            .fg(Color::LightCyan)
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            )
             .gauge_style(Style::default().fg(Color::Cyan))
             .line_set(symbols::line::THICK)
             .ratio(cpu_ratio);
@@ -179,7 +209,18 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
             0.0
         };
         let memory_gauge = LineGauge::default()
-            .block(Block::default().borders(Borders::ALL).title("Memory"))
+            .block(
+                Block::default()
+                    .title(Span::styled(
+                        "Memory Usage",
+                        Style::default()
+                            .fg(Color::LightMagenta)
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            )
             .gauge_style(Style::default().fg(Color::Magenta))
             .line_set(symbols::line::THICK)
             .ratio(memory_ratio);
@@ -211,19 +252,25 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
                     .add_modifier(Modifier::BOLD),
             ),
         ])])
-        .block(Block::default().borders(Borders::ALL));
+        .block(
+            Block::default()
+                .title(Span::styled("Total", Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD))) // Consistent title
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
 
         let success = Paragraph::new(vec![Line::from(vec![
-            Span::styled("Success: ", Style::default().fg(Color::Gray)),
+            Span::styled("Count: ", Style::default().fg(Color::Gray)),
             Span::styled(
                 stats.success.to_string(),
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(Color::LightGreen)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!(
-                    " ({:.1}s)",
+                    " (Last: {:.1}s ago)",
                     stats
                         .last_success_time
                         .map(|t| t.elapsed().as_secs_f64())
@@ -232,17 +279,25 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
                 Style::default().fg(Color::DarkGray),
             ),
         ])])
-        .block(Block::default().borders(Borders::ALL));
+        .block(
+            Block::default()
+                .title(Span::styled("Success", Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD))) // Consistent title
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
 
         let failure = Paragraph::new(vec![Line::from(vec![
-            Span::styled("Failure: ", Style::default().fg(Color::Gray)),
+            Span::styled("Count: ", Style::default().fg(Color::Gray)),
             Span::styled(
                 stats.failure.to_string(),
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::LightRed)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!(
-                    " ({:.1}s)",
+                    " (Last: {:.1}s ago)",
                     stats
                         .last_failure_time
                         .map(|t| t.elapsed().as_secs_f64())
@@ -251,49 +306,53 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
                 Style::default().fg(Color::DarkGray),
             ),
         ])])
-        .block(Block::default().borders(Borders::ALL));
+        .block(
+            Block::default()
+                .title(Span::styled("Failure", Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD))) // Consistent title
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
 
         f.render_widget(total, counters[0]);
         f.render_widget(success, counters[1]);
         f.render_widget(failure, counters[2]);
 
-        // 请求统计图表 - Total Requests per Target
-        // 1. Collect target names into owned Strings to manage lifetime
-        let target_names: Vec<String> = stats
+        // 请求统计图表 - Corrected data structure for BarChart
+        let target_names_for_chart: Vec<String> = stats
             .targets
             .iter()
-            .map(|t| {
-                // Extract the last part of the URL or use the full URL
-                t.url.split('/').last().unwrap_or(&t.url).to_string()
-            })
+            .map(|t| t.url.split('/').last().unwrap_or(&t.url).to_string())
             .collect();
 
-        // 2. Create the data tuples using references to the owned Strings
-        let chart_data_tuples: Vec<(&str, u64)> = target_names
+        // Create the data tuples using references to the owned Strings
+        let chart_data_tuples: Vec<(&str, u64)> = target_names_for_chart
             .iter()
             .zip(stats.targets.iter())
-            .map(|(name, t)| (name.as_str(), t.success + t.failure)) // Use name.as_str()
+            .map(|(name, t)| (name.as_str(), t.success + t.failure))
             .collect();
 
-        // 3. Modify the BarChart call
         let barchart = BarChart::default()
             .block(
                 Block::default()
-                    // Update title to reflect the new data
-                    .title("Total Requests by Target")
-                    .borders(Borders::ALL),
+                    .title(Span::styled(
+                        "Requests by Target",
+                        Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray)),
             )
-            // Pass the data as a slice of tuples
-            .data(chart_data_tuples.as_slice())
-            .bar_width(5) // Can adjust width now, maybe wider bars
+            .data(chart_data_tuples.as_slice()) // Correctly use Vec<(&str, u64)>
+            .bar_width(6)
             .bar_gap(1)
-            // Set a single style for all bars in this single group
-            .bar_style(Style::default().fg(Color::Blue))
+            .bar_style(Style::default().fg(Color::LightYellow)) // Single color for all bars
             .value_style(
                 Style::default()
-                    .fg(Color::White) // Style for values shown under bars
+                    .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
-            );
+            )
+            .label_style(Style::default().fg(Color::DarkGray));
         f.render_widget(barchart, chunks[3]);
 
         // 成功率进度条
@@ -302,156 +361,172 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
         } else {
             0
         };
-        let success_color = if success_rate > 80 {
-            Color::Green
+        let rate_color = if success_rate > 80 {
+            Color::LightGreen
         } else if success_rate > 50 {
-            Color::Yellow
+            Color::LightYellow
         } else {
-            Color::Red
+            Color::LightRed
         };
         let gauge = Gauge::default()
             .block(
                 Block::default()
-                    .title(format!("Success Rate: {}%", success_rate))
-                    .borders(Borders::ALL),
+                    .title(Span::styled(
+                        format!("Success Rate: {}%", success_rate),
+                        Style::default().fg(rate_color).add_modifier(Modifier::BOLD),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray)),
             )
-            .gauge_style(Style::default().fg(success_color))
+            .gauge_style(Style::default().fg(rate_color))
             .percent(success_rate);
         f.render_widget(gauge, chunks[4]);
 
-        // 线程状态
-        let thread_info: Vec<Line> = stats
+        // 线程状态 - Table
+        let thread_header_cells = ["Thread ID", "Requests", "Last Active"].iter().map(|h| {
+            Cell::from(*h).style(
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )
+        });
+        let thread_header = Row::new(thread_header_cells)
+            .style(Style::default().bg(Color::DarkGray)) // Header background
+            .height(1);
+
+        let thread_rows: Vec<Row> = stats
             .threads
             .iter()
             .map(|t| {
                 let last_active_secs = t.last_active.elapsed().as_secs_f64();
-                let status_color = if last_active_secs < 1.0 {
-                    Color::Green
+                let activity_color = if last_active_secs < 1.0 {
+                    Color::LightGreen
                 } else if last_active_secs < 5.0 {
-                    Color::Yellow
+                    Color::LightYellow
                 } else {
-                    Color::Red
+                    Color::LightRed
                 };
-
-                Line::from(vec![
-                    Span::raw(format!("Thread {:?}: ", t.id)),
-                    Span::styled(
-                        format!("{} req", t.requests),
-                        Style::default().fg(Color::Cyan),
-                    ),
-                    Span::raw(" | "),
-                    Span::styled(
-                        format!("{:.1}s ago", last_active_secs),
-                        Style::default().fg(status_color),
-                    ),
+                Row::new(vec![
+                    Cell::from(format!("{:?}", t.id)),
+                    Cell::from(t.requests.to_string()).style(Style::default().fg(Color::Cyan)),
+                    Cell::from(format!("{:.1}s ago", last_active_secs))
+                        .style(Style::default().fg(activity_color)),
                 ])
             })
             .collect();
 
-        let thread_status = Paragraph::new(thread_info)
+        let thread_rows_iter: Vec<Row> = thread_rows; // Ensure type is explicit for Table::new
+        let thread_table = Table::new(thread_rows_iter)
+            .widths(&[
+                Constraint::Percentage(40), // Thread ID
+                Constraint::Percentage(30), // Requests
+                Constraint::Percentage(30), // Last Active
+            ])
+            .header(thread_header)
             .block(
                 Block::default()
-                    .title(format!("Thread Status ({})", stats.threads.len()))
-                    .borders(Borders::ALL),
+                    .title(Span::styled(
+                        format!("Thread Activity ({})", stats.threads.len()),
+                        Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD), // Consistent title
+                    ))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray)),
             )
-            .wrap(Wrap { trim: true });
-        f.render_widget(thread_status, chunks[5]);
+            .highlight_style(Style::default().fg(Color::Black).bg(Color::LightCyan)) // More visible highlight
+            .highlight_symbol("▶ "); // Different highlight symbol
+        f.render_widget(thread_table, chunks[5]);
 
-        // Target状态
-        let targets_info: Vec<Line> = stats
+        // Target状态 - Table
+        let target_header_cells = ["URL", "S/F", "Rate", "RPS", "Last OK", "Last Fail", "Error"]
+            .iter()
+            .map(|h| {
+                Cell::from(*h).style(
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )
+            });
+        let target_header = Row::new(target_header_cells)
+            .style(Style::default().bg(Color::DarkGray))
+            .height(1);
+
+        let target_rows: Vec<Row> = stats
             .targets
             .iter()
-            .flat_map(|t| {
+            .map(|t| {
                 let success_rate = if t.success + t.failure > 0 {
                     t.success as f64 / (t.success + t.failure) as f64 * 100.0
                 } else {
                     0.0
                 };
-
-                let status_color = if success_rate > 80.0 {
-                    Color::Green
+                let target_rate_color = if success_rate > 80.0 {
+                    Color::LightGreen
                 } else if success_rate > 50.0 {
-                    Color::Yellow
+                    Color::LightYellow
                 } else {
-                    Color::Red
+                    Color::LightRed
                 };
-
-                let last_success = t
+                let last_success_str = t
                     .last_success_time
-                    .map(|t| t.elapsed().as_secs_f64())
-                    .map(|s| format!("{:.1}s ago", s))
+                    .map(|time| format!("{:.1}s ago", time.elapsed().as_secs_f64()))
                     .unwrap_or_else(|| "N/A".to_string());
-
-                let last_failure = t
+                let last_failure_str = t
                     .last_failure_time
-                    .map(|t| t.elapsed().as_secs_f64())
-                    .map(|s| format!("{:.1}s ago", s))
+                    .map(|time| format!("{:.1}s ago", time.elapsed().as_secs_f64()))
                     .unwrap_or_else(|| "N/A".to_string());
-
-                let rps = if let Some(time) = t.last_success_time {
-                    (t.success as f64 / time.elapsed().as_secs_f64()).round()
+                let rps_val = if let Some(_last_success_time) = t.last_success_time {
+                    let elapsed_secs = stats.start_time.elapsed().as_secs_f64();
+                    if elapsed_secs > 0.0 {
+                        (t.success as f64 / elapsed_secs).round()
+                    } else {
+                        0.0
+                    }
                 } else {
                     0.0
                 };
+                let error_msg_str = t.last_network_error.as_deref().unwrap_or("-").to_string();
 
-                let mut lines = vec![
-                    Line::from(vec![
-                        Span::styled("URL: ", Style::default().fg(Color::Gray)),
-                        Span::styled(&t.url, Style::default().fg(Color::Cyan)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Success/Failure: ", Style::default().fg(Color::Gray)),
-                        Span::styled(t.success.to_string(), Style::default().fg(Color::Green)),
-                        Span::raw("/"),
-                        Span::styled(t.failure.to_string(), Style::default().fg(Color::Red)),
-                        Span::raw("  Rate: "),
-                        Span::styled(
-                            format!("{:.1}%", success_rate),
-                            Style::default().fg(status_color),
-                        ),
-                        Span::raw("  RPS: "),
-                        Span::styled(format!("{:.0}", rps), Style::default().fg(Color::Yellow)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Last Success: ", Style::default().fg(Color::Gray)),
-                        Span::styled(last_success, Style::default().fg(Color::Green)),
-                        Span::raw("  Last Failure: "),
-                        Span::styled(last_failure.clone(), Style::default().fg(Color::Red)), // Use clone here if needed later
-                    ]),
-                ];
-
-                // 如果存在最后的网络错误，并且最后一次失败就是这次网络错误（或没有失败记录），则显示它
-                if let Some(error_msg) = &t.last_network_error {
-                     // 只在最近一次失败是网络错误时显示，避免显示过时的网络错误
-                    if t.last_failure_time.is_some() && t.last_network_error.is_some() {
-                        // 显示最新的网络错误
-                        lines.push(Line::from(vec![
-                           Span::styled("  └─ Last Error: ", Style::default().fg(Color::DarkGray)),
-                           Span::styled(error_msg, Style::default().fg(Color::LightRed)),
-                        ]));
-                    } else if t.last_network_error.is_some() { // 如果没有失败记录但有网络错误
-                         lines.push(Line::from(vec![
-                           Span::styled("  └─ Last Error: ", Style::default().fg(Color::DarkGray)),
-                           Span::styled(error_msg, Style::default().fg(Color::LightRed)),
-                        ]));
-                    }
-
-                }
-
-
-                lines.push(Line::default()); // Add the empty line separator
-                lines // Return the vector of lines
+                Row::new(vec![
+                    Cell::from(t.url.clone()).style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), // Bold URL
+                    Cell::from(format!("{}/{}", t.success, t.failure)).style(Style::default().fg(
+                        if t.success > t.failure { Color::LightGreen } else { Color::LightRed }
+                    )),
+                    Cell::from(format!("{:.1}%", success_rate)).style(Style::default().fg(target_rate_color)),
+                    Cell::from(format!("{:.0}", rps_val)).style(Style::default().fg(Color::LightYellow)),
+                    Cell::from(last_success_str).style(Style::default().fg(Color::Green)), // Ensured DarkGreen is replaced
+                    Cell::from(last_failure_str).style(Style::default().fg(Color::Red)),     // Ensured DarkRed is replaced
+                    Cell::from(error_msg_str).style(Style::default().fg(Color::Red)),
+                ])
             })
             .collect();
 
-        let targets_status = Paragraph::new(targets_info)
+        let target_rows_iter: Vec<Row> = target_rows; // Ensure type is explicit for Table::new
+        let target_table = Table::new(target_rows_iter)
+            .widths(&[
+                Constraint::Min(20),        // URL (Min width, can expand)
+                Constraint::Length(8),      // S/F
+                Constraint::Length(8),      // Rate
+                Constraint::Length(7),      // RPS
+                Constraint::Length(12),     // Last OK
+                Constraint::Length(12),     // Last Fail
+                Constraint::Percentage(15), // Error (Takes remaining flexible space)
+            ])
+            .header(target_header)
             .block(
                 Block::default()
-                    .title(format!("Targets Status ({})", stats.targets.len()))
-                    .borders(Borders::ALL),
+                    .title(Span::styled(
+                        format!("Target Details ({})", stats.targets.len()),
+                        Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD), // Consistent title
+                    ))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray)),
             )
-            .wrap(Wrap { trim: true });
-        f.render_widget(targets_status, chunks[6]);
+            .highlight_style(Style::default().fg(Color::Black).bg(Color::LightCyan)) // Consistent highlight
+            .highlight_symbol("▶ ");
+        f.render_widget(target_table, chunks[6]);
     })?;
     Ok(())
 }

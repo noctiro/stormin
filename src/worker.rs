@@ -21,6 +21,7 @@ pub enum WorkerMessage {
 
 #[derive(Debug)]
 pub struct TargetUpdate {
+    pub id: usize, // Unique ID of the target
     pub url: String,
     pub success: bool,
     pub timestamp: Instant,
@@ -31,17 +32,20 @@ pub struct TargetUpdate {
 
 struct RequestBuffer {
     params_vec: Vec<(String, String)>,
+    headers_vec: Vec<(String, String)>, // Added for rendered headers
 }
 
 impl RequestBuffer {
     fn new(capacity: usize) -> Self {
         Self {
             params_vec: Vec::with_capacity(capacity),
+            headers_vec: Vec::with_capacity(capacity), // Initialize headers_vec
         }
     }
 
     fn clear(&mut self) {
         self.params_vec.clear();
+        self.headers_vec.clear(); // Clear headers_vec
     }
 }
 
@@ -151,16 +155,49 @@ pub async fn worker_loop(
                         };
 
                         let mut req = client.request(target.method.clone(), &target.url);
-
-                        // 添加headers
-                        req = req.headers(target.headers.clone());
-
-                        // 构建请求参数
+                        
                         buffer.clear();
-                        // Create a fresh context for each request task
+                        // Create a fresh context for each request task (params and headers can share)
                         let mut context = HashMap::new();
+
+                        // Render and add headers
+                        for (key, template_node) in &target.headers {
+                            match render_ast_node(template_node, &mut context, logger.clone()) {
+                                Ok(value_string) => {
+                                    match reqwest::header::HeaderName::from_bytes(key.as_bytes()) {
+                                        Ok(header_name) => {
+                                            match reqwest::header::HeaderValue::from_str(&value_string) {
+                                                Ok(header_value) => {
+                                                    req = req.header(header_name, header_value);
+                                                    buffer.headers_vec.push((key.clone(), value_string)); // Store for debugging
+                                                }
+                                                Err(e) => {
+                                                    logger.warning(&format!(
+                                                        "Worker {:?}: Invalid header value for '{}' in target '{}': {} (Value: '{}'). Skipping header.",
+                                                        thread_id, key, target.url, e, value_string
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            logger.warning(&format!(
+                                                "Worker {:?}: Invalid header name '{}' in target '{}': {}. Skipping header.",
+                                                thread_id, key, target.url, e
+                                            ));
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    logger.warning(&format!(
+                                        "Worker {:?}: Failed to render template for header '{}' in target '{}': {}. Skipping header.",
+                                        thread_id, key, target.url, e
+                                    ));
+                                }
+                            }
+                        }
+
+                        // Render and prepare params
                         for (key, template) in &target.params {
-                            // Render the value, passing the mutable context
                             let value_result =
                                 render_ast_node(template, &mut context, logger.clone());
                             match value_result {
@@ -172,13 +209,11 @@ pub async fn worker_loop(
                                         "Worker {:?}: Failed to render template for param '{}' in target '{}': {}. Skipping param.",
                                         thread_id, key, target.url, e
                                     ));
-                                    // Optionally push an empty string or skip entirely
-                                    // buffer.params_vec.push((key.clone(), String::new()));
                                 }
                             }
                         }
 
-                        // 根据方法添加参数
+                        // Apply params based on method
                         match target.method {
                             Method::GET | Method::DELETE | Method::OPTIONS => {
                                 req = req.query(&buffer.params_vec);
@@ -215,11 +250,24 @@ pub async fn worker_loop(
                         };
 
                         let debug_message = format!(
-                            "[Request Debug]\nURL: {}\nMethod: {}\nDuration: {:?}\nStatus: {}{}{}",
+                            "[Request Debug]\nURL: {}\nMethod: {}\nDuration: {:?}\nStatus: {}{}{}{}",
                             target.url,
                             target.method,
                             duration,
                             status_code.map_or_else(|| "N/A".to_string(), |s| s.to_string()),
+                            if !buffer.headers_vec.is_empty() {
+                                format!(
+                                    "\nHeaders:\n{}",
+                                    buffer
+                                        .headers_vec
+                                        .iter()
+                                        .map(|(k, v)| format!("  {}: {}", k, v))
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                )
+                            } else {
+                                String::new()
+                            },
                             if !buffer.params_vec.is_empty() {
                                 format!(
                                     "\nParams: {}",
@@ -239,6 +287,7 @@ pub async fn worker_loop(
 
                         // 发送统计信息到UI
                         let update = TargetUpdate {
+                            id: target.id, // Pass the target's unique ID
                             url: target.url.clone(),
                             success,
                             timestamp,

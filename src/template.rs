@@ -277,7 +277,7 @@ pub fn render_ast_node(
     logger: Logger,
 ) -> Result<String, String> {
     match node {
-        TemplateAstNode::Static(s) => Ok(s.clone()),
+        TemplateAstNode::Static(s) => Ok(s.to_string()),
         TemplateAstNode::FunctionCall {
             def_name,
             name,

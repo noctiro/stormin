@@ -1,6 +1,5 @@
 use pest::Parser;
 use pest_derive::Parser;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::Deserialize;
 use std::{error::Error, fs, num::NonZeroUsize};
 
@@ -143,9 +142,10 @@ pub struct AttackConfig {
 
 #[derive(Clone, Debug)]
 pub struct CompiledTarget {
+    pub id: usize, // Unique ID for the target
     pub url: String,
     pub method: reqwest::Method,
-    pub headers: HeaderMap,
+    pub headers: Vec<(String, TemplateAstNode)>, // Changed to support template AST
     pub params: Vec<(String, TemplateAstNode)>,
 }
 
@@ -310,6 +310,7 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
     };
 
     let mut compiled: Vec<CompiledTarget> = Vec::new();
+    let mut target_id_counter = 0; // Counter for generating unique IDs
     'target_loop: for raw_t in raw.targets { // Add a label to the outer loop
         // 使用更严格的验证逻辑
         if let Err(e) = super::validator::validate_target(&raw_t) {
@@ -318,49 +319,64 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
         }
 
         let mut parsed_params = Vec::new(); // Temporary storage for parsed params
+        let mut parsed_headers = Vec::new(); // Temporary storage for parsed headers
         let mut target_has_error = false; // Flag for validation errors
 
+        // Parse and validate params
         if let Some(map) = raw_t.params {
             for (k, v) in map {
-                // Parse the template string into AST
                 match parse_template_string(&v) {
                     Ok(ast_node) => {
-                        parsed_params.push((k.clone(), ast_node)); // Store key and AST
+                        parsed_params.push((k.clone(), ast_node));
                     }
                     Err(e) => {
                         eprintln!("[Configuration verification failed] Target '{}', Param '{}': Failed to parse template: {}", raw_t.url, k, e);
                         target_has_error = true;
-                        break; // Stop processing params for this target if parsing fails
+                        break;
                     }
                 };
             }
         }
-
-        // Sort params: prioritize definitions over simple lookups/calls
-        // This helps ensure definitions like :pass are processed before uses like ${pass}
-        // Note: This is a simple heuristic and might not cover complex dependency chains.
-        parsed_params.sort_by_key(|(_, node)| {
-            match node {
-                TemplateAstNode::FunctionCall { def_name, .. } if def_name.is_some() => 0, // Definitions first
-                _ => 1, // Everything else later
+        if !target_has_error {
+            parsed_params.sort_by_key(|(_, node)| {
+                match node {
+                    TemplateAstNode::FunctionCall { def_name, .. } if def_name.is_some() => 0,
+                    _ => 1,
+                }
+            });
+            if let Err(e) = super::validator::validate_target_templates(&parsed_params, &builtin_functions) {
+                eprintln!("[Configuration verification failed] Target '{}' (Params): {}", raw_t.url, e);
+                target_has_error = true;
             }
-        });
-
-
-        // If parsing succeeded, perform target-level validation
-        if !target_has_error {
-             if let Err(e) = super::validator::validate_target_templates(&parsed_params, &builtin_functions) {
-                 eprintln!("[Configuration verification failed] Target '{}': {}", raw_t.url, e);
-                 target_has_error = true;
-             }
         }
-        
-        let mut headers = HeaderMap::new();
-        if !target_has_error {
-            for (key, value) in &raw_t.headers.unwrap_or_default() {
-                let header_name = HeaderName::from_bytes(key.as_bytes())?;
-                let header_value = HeaderValue::from_str(&value)?;
-                headers.append(header_name, header_value);
+
+        // Parse and validate headers
+        if !target_has_error { // Only proceed if params were okay
+            if let Some(map) = raw_t.headers {
+                for (k, v) in map {
+                    match parse_template_string(&v) {
+                        Ok(ast_node) => {
+                            parsed_headers.push((k.clone(), ast_node));
+                        }
+                        Err(e) => {
+                            eprintln!("[Configuration verification failed] Target '{}', Header '{}': Failed to parse template: {}", raw_t.url, k, e);
+                            target_has_error = true;
+                            break;
+                        }
+                    };
+                }
+            }
+            if !target_has_error { // Only sort and validate if parsing was okay
+                // Headers generally don't have the same definition-use dependency as params,
+                // but sorting can be kept for consistency if complex header templates arise.
+                // For now, simple sort by key might be sufficient or no sort.
+                // parsed_headers.sort_by_key(|(k, _)| k.clone()); // Example: sort by key
+
+                // Validate header templates
+                if let Err(e) = super::validator::validate_target_templates(&parsed_headers, &builtin_functions) {
+                    eprintln!("[Configuration verification failed] Target '{}' (Headers): {}", raw_t.url, e);
+                    target_has_error = true;
+                }
             }
         }
 
@@ -372,7 +388,6 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
 
         // If everything is valid, proceed
         let method = match raw_t.method.as_deref().unwrap_or("GET").to_uppercase().as_str() {
-            // ... (rest of method matching remains the same)
             "GET" => reqwest::Method::GET,
             "POST" => reqwest::Method::POST,
             "PUT" => reqwest::Method::PUT,
@@ -388,11 +403,13 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
         };
 
         compiled.push(CompiledTarget {
+            id: target_id_counter,
             url: raw_t.url,
             method,
-            headers,
-            params: parsed_params, // Use the validated parsed_params
+            headers: parsed_headers, // Use the validated parsed_headers
+            params: parsed_params,
         });
+        target_id_counter += 1;
     }
 
     // Check again after validation filtering
@@ -407,4 +424,5 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
         proxies,
     })
 }
+
 
