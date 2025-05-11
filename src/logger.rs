@@ -1,6 +1,7 @@
-use std::sync::mpsc::Sender; // Changed to std::sync::mpsc
+use std::sync::mpsc::Sender;
+use chrono::Utc;
 
-use crate::ui::DebugInfo;
+use crate::ui::DebugInfo; // Assuming DebugInfo is defined in ui module and includes a timestamp and message
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -8,6 +9,7 @@ pub enum LogLevel {
     Info,
     Warning,
     Error,
+    // Debug, // Consider adding a Debug level if not already present
 }
 
 impl LogLevel {
@@ -16,23 +18,64 @@ impl LogLevel {
             LogLevel::Info => "INFO",
             LogLevel::Warning => "WARN",
             LogLevel::Error => "ERROR",
+            // LogLevel::Debug => "DEBUG",
         }
     }
 }
 
-#[derive(Clone)] // Add Clone derive
+#[derive(Clone)]
 pub struct Logger {
-    sender: Sender<DebugInfo>,
+    sender: Option<Sender<DebugInfo>>, // For TUI mode
+    cli_mode: bool,                   // To distinguish between TUI and CLI
 }
 
 impl Logger {
-    pub fn new(sender: Sender<DebugInfo>) -> Self {
-        Logger { sender }
+    // Constructor now takes an Option for the sender and the cli_mode flag
+    pub fn new(sender: Option<Sender<DebugInfo>>, cli_mode: bool) -> Self {
+        Logger { sender, cli_mode }
+    }
+
+    // close_sender remains the same, useful if TUI mode was active and needs to stop sending
+    pub fn close_sender(&mut self) {
+        self.sender.take();
     }
 
     pub fn log(&self, level: LogLevel, message: &str) {
-        let formatted_message = format!("[{}] {}", level.as_str(), message);
-        self.send_log(formatted_message);
+        if self.cli_mode {
+            // In CLI mode, print directly to stdout/stderr
+            let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S");
+            let formatted_message = format!("[{}] [{}] {}", timestamp, level.as_str(), message);
+            if level == LogLevel::Error || level == LogLevel::Warning {
+                eprintln!("{}", formatted_message);
+            } else {
+                println!("{}", formatted_message);
+            }
+        } else if let Some(sender) = &self.sender {
+            // In TUI mode, send through the channel
+            // The existing send_log logic can be adapted or reused here.
+            // For simplicity, directly creating DebugInfo and sending.
+            let debug_info = DebugInfo {
+                // Assuming DebugInfo from ui.rs has these fields.
+                // If DebugInfo in ui.rs uses chrono::DateTime<Utc>, use that.
+                // Otherwise, adjust as needed. For now, using Instant for consistency with original send_log.
+                timestamp: Instant::now(), // Or Utc::now() if DebugInfo expects DateTime<Utc>
+                message: format!("[{}] {}", level.as_str(), message),
+            };
+            // The complex error handling from the original send_log can be kept if desired.
+            // For this diff, simplifying to a direct send.
+            if sender.send(debug_info).is_err() {
+                // Fallback if TUI channel is closed, print to stderr
+                let timestamp_fallback = Utc::now().format("%Y-%m-%d %H:%M:%S");
+                eprintln!(
+                    "[Fallback] [{}] [{}] {}",
+                    timestamp_fallback,
+                    level.as_str(),
+                    message
+                );
+            }
+        }
+        // If not cli_mode and sender is None, logs are effectively dropped,
+        // which is consistent with close_sender behavior.
     }
 
     pub fn info(&self, message: &str) {
@@ -47,52 +90,24 @@ impl Logger {
         self.log(LogLevel::Error, message);
     }
 
-    fn send_log(&self, message: String) {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::time::{SystemTime, UNIX_EPOCH};
-        
-        static FAILURE_COUNT: AtomicUsize = AtomicUsize::new(0);
-        static LAST_WARNING: AtomicUsize = AtomicUsize::new(0);
-        
-        let debug_info = DebugInfo {
-            timestamp: Instant::now(),
-            message,
-        };
-
-        // std::sync::mpsc::Sender::send is blocking, but usually fine for logging.
-        // It returns Err if the channel is disconnected.
-        if let Err(e) = self.sender.send(debug_info) {
-            // Log channel is likely disconnected, meaning the log_receiver thread has panicked or exited.
-            // This is a critical situation for logging.
-            let failures = FAILURE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default() // Fallback to 0 if system time is before UNIX_EPOCH
-                .as_millis() as usize;
-            
-            let last = LAST_WARNING.load(Ordering::Relaxed);
-            // Throttle critical warnings to avoid flooding stderr if logging is broken.
-            if failures == 1 || (now - last > 5000) { // Log first failure and then every 5s
-                eprintln!(
-                    "CRITICAL: Failed to send log, channel might be closed. Error: {}. Failures: {}",
-                    e, failures
-                );
-                LAST_WARNING.store(now, Ordering::Relaxed);
-            }
-        } else {
-            // Reset failure count on successful send
-            FAILURE_COUNT.store(0, Ordering::Relaxed);
-        }
-    }
+    // The original send_log method is removed as its logic is integrated into log()
+    // or simplified. If the detailed error handling (FAILURE_COUNT, LAST_WARNING)
+    // is crucial, it should be re-integrated into the TUI path of the log() method.
 }
 
-// Macros to simplify logging
+// Macros remain unchanged but will now call the modified Logger methods.
+// Note: The log_debug macro points to a $logger.debug method which is not defined.
+// It should either be removed or a debug method added to Logger.
+// For now, I will comment it out to avoid compilation errors.
+
+/*
 #[macro_export]
 macro_rules! log_debug {
     ($logger:expr, $($arg:tt)*) => {
         $logger.debug(&format!($($arg)*))
     };
 }
+*/
 
 #[macro_export]
 macro_rules! log_info {

@@ -17,7 +17,7 @@ use crate::{
     logger::Logger,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use rand::{Rng, rng}; // Keep rng for now
+use rand::Rng;
 
 /// Applies built-in template functions.
 /// Takes the function name, rendered arguments, and the current rendering context.
@@ -27,6 +27,7 @@ pub fn apply_function(
     args: Vec<String>,
     context: &mut HashMap<String, String>, // Use context now
     logger: Logger,
+    rng: &mut impl Rng,
 ) -> Result<String, String> {
     // Note: Context is mainly used by render_ast_node for variable lookup.
     // apply_function generally calculates/generates values.
@@ -41,7 +42,7 @@ pub fn apply_function(
                     "Warning: username function does not take arguments."
                 ));
             }
-            Ok(generate_username(&mut rng()))
+            Ok(generate_username(rng))
         }
         "password" => {
             if !args.is_empty() {
@@ -49,19 +50,19 @@ pub fn apply_function(
                     "Warning: password function does not take arguments."
                 ));
             }
-            Ok(generate_password(&mut rng()))
+            Ok(generate_password(rng))
         }
         "qqid" => {
             if !args.is_empty() {
                 logger.warning(&format!("Warning: qqid function does not take arguments."));
             }
-            Ok(generate_qq_id(&mut rng()))
+            Ok(generate_qq_id(rng))
         }
         "email" => {
             if !args.is_empty() {
                 logger.warning(&format!("Warning: email function does not take arguments."));
             }
-            Ok(generate_email(&mut rng()))
+            Ok(generate_email(rng))
         }
         "cn_mobile" => {
             if !args.is_empty() {
@@ -69,7 +70,7 @@ pub fn apply_function(
                     "Warning: cn_mobile function does not take arguments."
                 ));
             }
-            Ok(generate_cn_mobile(&mut rng()))
+            Ok(generate_cn_mobile(rng))
         }
         "chinese_name" => {
             if !args.is_empty() {
@@ -77,7 +78,7 @@ pub fn apply_function(
                     "Warning: chinese_name function does not take arguments."
                 ));
             }
-            Ok(generate_chinese_name(&mut rng()))
+            Ok(generate_chinese_name(rng))
         }
         "chinese_id" => {
             if !args.is_empty() {
@@ -85,7 +86,7 @@ pub fn apply_function(
                     "Warning: chinese_id function does not take arguments."
                 ));
             }
-            Ok(generate_chinese_id(&mut rng()))
+            Ok(generate_chinese_id(rng))
         }
         "chinese_bank_card" => {
             if !args.is_empty() {
@@ -93,19 +94,19 @@ pub fn apply_function(
                     "Warning: chinese_bank_card function does not take arguments."
                 ));
             }
-            Ok(generate_chinese_bank_card(&mut rng()))
+            Ok(generate_chinese_bank_card(rng))
         }
         "ipv4" => {
             if !args.is_empty() {
                 logger.warning(&format!("Warning: ipv4 function does not take arguments."));
             }
-            Ok(generate_ipv4(&mut rng()))
+            Ok(generate_ipv4(rng))
         }
         "ipv6" => {
             if !args.is_empty() {
                 logger.warning(&format!("Warning: ipv6 function does not take arguments."));
             }
-            Ok(generate_ipv6(&mut rng()))
+            Ok(generate_ipv6(rng))
         }
         "user_agent" => {
             if !args.is_empty() {
@@ -113,7 +114,7 @@ pub fn apply_function(
                     "Warning: user_agent function does not take arguments."
                 ));
             }
-            Ok(generate_user_agent(&mut rng()))
+            Ok(generate_user_agent(rng))
         }
         "base64" => match args.first() {
             Some(arg) => Ok(STANDARD.encode(arg)),
@@ -172,7 +173,7 @@ pub fn apply_function(
                 return Ok(String::new());
             }
 
-            let mut rng = rng();
+            // let mut rng = rng(); // Removed: rng is now passed as a parameter
             let random_type = &args[0];
 
             match random_type.as_str() {
@@ -199,7 +200,7 @@ pub fn apply_function(
 
                         Ok((0..len)
                             .map(|_| {
-                                let idx = rng.random_range(0..charset.len()); // Use gen_range
+                                let idx = rng.random_range(0..charset.len()); // Use random_range from passed rng
                                 charset[idx] as char
                             })
                             .collect())
@@ -217,7 +218,7 @@ pub fn apply_function(
                                 ));
                                 Ok(String::new())
                             } else {
-                                Ok(rng.random_range(0..=max).to_string()) // Use gen_range
+                                Ok(rng.random_range(0..=max).to_string()) // Use random_range from passed rng
                             }
                         } else {
                             logger
@@ -233,7 +234,7 @@ pub fn apply_function(
                                 ));
                                 Ok(String::new())
                             } else {
-                                Ok(rng.random_range(min..=max).to_string()) // Use gen_range
+                                Ok(rng.random_range(min..=max).to_string()) // Use random_range from passed rng
                             }
                         } else {
                             logger.warning(&format!(
@@ -262,7 +263,7 @@ pub fn apply_function(
                 ));
                 return Ok(String::new());
             }
-            let index = rng().random_range(0..args.len());
+            let index = rng.random_range(0..args.len()); // Use random_range from passed rng
             Ok(args[index].clone())
         } // Add comma here
         // Default: if function is not known
@@ -288,6 +289,7 @@ pub fn render_ast_node(
     node: &TemplateAstNode,
     context: &mut HashMap<String, String>,
     logger: Logger,
+    rng: &mut impl Rng,
 ) -> Result<String, String> {
     match node {
         TemplateAstNode::Static(s) => Ok(s.to_string()),
@@ -308,11 +310,11 @@ pub fn render_ast_node(
             // 2. Render arguments recursively
             let mut rendered_args = Vec::with_capacity(args.len());
             for arg_node in args {
-                rendered_args.push(render_ast_node(arg_node, context, logger.clone())?);
+                rendered_args.push(render_ast_node(arg_node, context, logger.clone(), rng)?);
             }
 
             // 3. Apply the function
-            let result = apply_function(name, rendered_args, context, logger.clone())?;
+            let result = apply_function(name, rendered_args, context, logger.clone(), rng)?;
 
             // 4. Store result if it's a definition
             if let Some(d_name) = def_name {
@@ -327,14 +329,14 @@ pub fn render_ast_node(
             // Render each node in the root sequence and concatenate
             nodes
                 .iter()
-                .map(|n| render_ast_node(n, context, logger.clone()))
+                .map(|n| render_ast_node(n, context, logger.clone(), rng))
                 .collect::<Result<String, _>>()
         }
         TemplateAstNode::TemplateString(nodes) => {
             // Render each node within the template string and concatenate
             nodes
                 .iter()
-                .map(|n| render_ast_node(n, context, logger.clone()))
+                .map(|n| render_ast_node(n, context, logger.clone(), rng))
                 .collect::<Result<String, _>>()
         }
     }

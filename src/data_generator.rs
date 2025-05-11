@@ -146,7 +146,7 @@ async fn data_generator_loop(
         let mut rendered_headers = Vec::with_capacity(target_config.headers.len());
         for (key, template_node) in &target_config.headers {
             // Do NOT clear context_map here; it's shared for this target_config
-            match render_ast_node(template_node, &mut target_context_map, logger.clone()) {
+            match render_ast_node(template_node, &mut target_context_map, logger.clone(), &mut rng) {
                 Ok(value_string) => rendered_headers.push((key.clone(), value_string)),
                 Err(e) => logger.warning(&format!(
                     "Data Generator: Failed to render header '{}' for target '{}': {}",
@@ -158,7 +158,7 @@ async fn data_generator_loop(
         let mut rendered_params = Vec::with_capacity(target_config.params.len());
         for (key, template_node) in &target_config.params {
             // Do NOT clear context_map here; it's shared for this target_config
-            match render_ast_node(template_node, &mut target_context_map, logger.clone()) {
+            match render_ast_node(template_node, &mut target_context_map, logger.clone(), &mut rng) {
                 Ok(value_string) => rendered_params.push((key.clone(), value_string)),
                 Err(e) => logger.warning(&format!(
                     "Data Generator: Failed to render param '{}' for target '{}': {}",
@@ -272,7 +272,7 @@ async fn data_generator_loop(
         let mut rendered_headers = Vec::with_capacity(target_config.headers.len());
         for (key, template_node) in &target_config.headers {
             // Do NOT clear context_map here; it's shared for this target_config
-            match render_ast_node(template_node, &mut target_context_map, logger.clone()) {
+            match render_ast_node(template_node, &mut target_context_map, logger.clone(), &mut rng) {
                 Ok(value_string) => rendered_headers.push((key.clone(), value_string)),
                 Err(e) => logger.warning(&format!(
                     "Data Generator: Failed to render header '{}' for target '{}': {}",
@@ -284,7 +284,7 @@ async fn data_generator_loop(
         let mut rendered_params = Vec::with_capacity(target_config.params.len());
         for (key, template_node) in &target_config.params {
             // Do NOT clear context_map here; it's shared for this target_config
-            match render_ast_node(template_node, &mut target_context_map, logger.clone()) {
+            match render_ast_node(template_node, &mut target_context_map, logger.clone(), &mut rng) {
                 Ok(value_string) => rendered_params.push((key.clone(), value_string)),
                 Err(e) => logger.warning(&format!(
                     "Data Generator: Failed to render param '{}' for target '{}': {}",

@@ -22,6 +22,7 @@ pub enum ConfigError {
     InvalidMinSuccessRate(String),
     InvalidRpsAdjustFactor(String),
     InvalidSuccessRatePenaltyFactor(String),
+    InvalidDurationFormat(String), // Added for run_duration parsing
 }
 
 impl fmt::Display for ConfigError {
@@ -70,6 +71,9 @@ impl fmt::Display for ConfigError {
                     "Invalid success_rate_penalty_factor value: '{}'. Must be >= 1.0.",
                     value
                 )
+            }
+            ConfigError::InvalidDurationFormat(e) => {
+                write!(f, "Invalid duration format: {}. Expected format like '10s', '5m', '1h30m'.", e)
             }
         }
     }
