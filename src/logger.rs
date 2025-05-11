@@ -1,4 +1,4 @@
-use tokio::sync::mpsc::Sender;
+use std::sync::mpsc::Sender; // Changed to std::sync::mpsc
 
 use crate::ui::DebugInfo;
 use std::time::Instant;
@@ -59,33 +59,29 @@ impl Logger {
             message,
         };
 
-        match self.sender.try_send(debug_info) {
-            Ok(_) => {
-                FAILURE_COUNT.store(0, Ordering::Relaxed);
+        // std::sync::mpsc::Sender::send is blocking, but usually fine for logging.
+        // It returns Err if the channel is disconnected.
+        if let Err(e) = self.sender.send(debug_info) {
+            // Log channel is likely disconnected, meaning the log_receiver thread has panicked or exited.
+            // This is a critical situation for logging.
+            let failures = FAILURE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default() // Fallback to 0 if system time is before UNIX_EPOCH
+                .as_millis() as usize;
+            
+            let last = LAST_WARNING.load(Ordering::Relaxed);
+            // Throttle critical warnings to avoid flooding stderr if logging is broken.
+            if failures == 1 || (now - last > 5000) { // Log first failure and then every 5s
+                eprintln!(
+                    "CRITICAL: Failed to send log, channel might be closed. Error: {}. Failures: {}",
+                    e, failures
+                );
+                LAST_WARNING.store(now, Ordering::Relaxed);
             }
-            Err(e) => {
-                // Only count full channel errors
-                if let tokio::sync::mpsc::error::TrySendError::Full(_) = e {
-                    let failures = FAILURE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-                    
-                    // Get current timestamp in milliseconds
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as usize;
-
-                    // Log warning at most every 5 seconds
-                    if failures % 100 == 0 {
-                        let last = LAST_WARNING.load(Ordering::Relaxed);
-                        if now - last > 5000 { // 5 seconds
-                            LAST_WARNING.store(now, Ordering::Relaxed);
-                        }
-                    }
-                } else {
-                    // Handle closed channel error
-                    eprintln!("CRITICAL: Log channel closed - {}", e);
-                }
-            }
+        } else {
+            // Reset failure count on successful send
+            FAILURE_COUNT.store(0, Ordering::Relaxed);
         }
     }
 }

@@ -1,19 +1,26 @@
 use crate::config::loader::AttackConfig;
 use crate::logger::Logger;
-use crate::template::render_ast_node;
-use rand::rngs::{SmallRng, ThreadRng};
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
-use rand::{Rng, SeedableRng};
 use reqwest::{Client, Method};
-use std::collections::HashMap;
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
+
+// Structure for pre-generated request data
+#[derive(Debug, Clone)]
+pub struct PreGeneratedRequest {
+    pub target_id: usize,
+    pub target_url: String,
+    pub method: Method,
+    pub rendered_headers: Vec<(String, String)>,
+    pub rendered_params: Vec<(String, String)>,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum WorkerMessage {
-    Task,
     Pause,
     Resume,
     Stop,
@@ -30,37 +37,23 @@ pub struct TargetUpdate {
     pub thread_id: ThreadId,           // Add ThreadId
 }
 
-struct RequestBuffer {
-    params_vec: Vec<(String, String)>,
-    headers_vec: Vec<(String, String)>, // Added for rendered headers
-}
-
-impl RequestBuffer {
-    fn new(capacity: usize) -> Self {
-        Self {
-            params_vec: Vec::with_capacity(capacity),
-            headers_vec: Vec::with_capacity(capacity), // Initialize headers_vec
-        }
-    }
-
-    fn clear(&mut self) {
-        self.params_vec.clear();
-        self.headers_vec.clear(); // Clear headers_vec
-    }
-}
-
 pub async fn worker_loop(
-    mut rx: broadcast::Receiver<WorkerMessage>,
-    config: AttackConfig,
+    mut control_rx: broadcast::Receiver<WorkerMessage>, // For Pause, Resume, Stop
+    mut data_rx: broadcast::Receiver<PreGeneratedRequest>, // Channel for pre-generated data
+    config: AttackConfig, // Still needed for timeout, client config etc.
     thread_id: ThreadId,
     logger: Logger,
-    stats_tx: tokio::sync::mpsc::Sender<TargetUpdate>,
+    stats_tx: mpsc::Sender<TargetUpdate>, // Corrected type from previous thought
 ) {
-    let mut buffer = RequestBuffer::new(16);
-    let mut rng = SmallRng::seed_from_u64(ThreadRng::default().random());
+    // buffer for dynamic generation is removed from worker
+    let mut rng = StdRng::from_os_rng(); // Initialize Send-compatible rng for proxy selection
     let mut paused = false;
     let loop_sleep_duration = Duration::from_millis(10);
-    let proxy_config = config.proxies.choose(&mut rng).cloned();
+    let proxy_config = if !config.proxies.is_empty() {
+        config.proxies.choose(&mut rng).cloned()
+    } else {
+        None
+    };
 
     let client_builder = Client::builder()
         .pool_max_idle_per_host(10)
@@ -101,221 +94,181 @@ pub async fn worker_loop(
         Client::new()
     });
 
+    // This is the correct start of the main loop.
+    // The duplicated block above this line in the original file will be removed.
     'main_loop: loop {
         while paused {
-            match rx.recv().await {
-                Ok(WorkerMessage::Resume) => {
-                    logger.info(&format!("Worker {:?} resuming...", thread_id));
-                    paused = false;
+            tokio::select! {
+                biased;
+                control_msg_result = control_rx.recv() => {
+                    match control_msg_result {
+                        Ok(WorkerMessage::Resume) => {
+                            logger.info(&format!("Worker {:?} resuming...", thread_id));
+                            paused = false;
+                        }
+                        Ok(WorkerMessage::Stop) => {
+                            logger.info(&format!("Worker {:?} stopping while paused...", thread_id));
+                            return;
+                        }
+                        Ok(_) => {} // Ignore Task while paused
+                        Err(broadcast::error::RecvError::Closed) => {
+                            logger.warning(&format!("Worker {:?}: Control channel closed while paused. Exiting.", thread_id));
+                            return;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            logger.warning(&format!("Worker {:?}: Control channel lagged by {} messages while paused.", thread_id, n));
+                        }
+                    }
                 }
-                Ok(WorkerMessage::Stop) => {
-                    logger.info(&format!("Worker {:?} stopping while paused...", thread_id));
-                    return;
-                }
-                Ok(_) => { /* Ignore other messages */ }
-                Err(broadcast::error::RecvError::Closed) => {
-                    logger.warning(&format!(
-                        "Worker {:?} channel disconnected while paused, exiting.",
-                        thread_id
-                    ));
-                    return;
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
             }
-            sleep(loop_sleep_duration).await;
+            if paused {
+                // Re-check in case Resume was processed before sleeping
+                sleep(loop_sleep_duration).await;
+            }
         }
 
-        match rx.recv().await {
-            Ok(msg) => {
-                match msg {
-                    WorkerMessage::Stop => {
+        // Main operational loop: select between control messages and data
+        tokio::select! {
+            biased; // Prioritize control messages
+
+            control_msg_result = control_rx.recv() => {
+                match control_msg_result {
+                    Ok(WorkerMessage::Stop) => {
                         logger.info(&format!("Worker {:?} received Stop signal.", thread_id));
                         break 'main_loop;
                     }
-                    WorkerMessage::Pause => {
+                    Ok(WorkerMessage::Pause) => {
                         logger.info(&format!("Worker {:?} pausing...", thread_id));
                         paused = true;
-                        continue;
+                        continue 'main_loop; // Re-evaluate 'while paused'
                     }
-                    WorkerMessage::Task => {
-                        let target = match config.targets.choose(&mut rng) {
-                            Some(t) => t,
-                            None => {
-                                logger.error(&format!(
-                                    "Worker {:?}: No targets available, skipping task.",
-                                    thread_id
-                                ));
-                                continue;
-                            }
-                        };
+                    Ok(WorkerMessage::Resume) => {
+                        // Already not paused if we are here, or handled by 'while paused'
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        logger.warning(&format!("Worker {:?}: Control channel closed. Exiting.", thread_id));
+                        break 'main_loop;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        logger.warning(&format!("Worker {:?}: Control channel lagged by {} messages.", thread_id, n));
+                    }
+                }
+            }, // Comma separates select arms
 
-                        let mut req = client.request(target.method.clone(), &target.url);
+            data_msg_result = data_rx.recv() => {
+                match data_msg_result {
+                    Ok(pre_gen_req) => {
+                        let PreGeneratedRequest {
+                            target_id,
+                            target_url,
+                            method,
+                            rendered_headers,
+                            rendered_params,
+                        } = pre_gen_req;
 
-                        buffer.clear();
-                        // Create a fresh context for each request task (params and headers can share)
-                        let mut context = HashMap::new();
+                        let mut req_builder = client.request(method.clone(), &target_url);
 
-                        // Render and add headers
-                        for (key, template_node) in &target.headers {
-                            match render_ast_node(template_node, &mut context, logger.clone()) {
-                                Ok(value_string) => {
-                                    match reqwest::header::HeaderName::from_bytes(key.as_bytes()) {
-                                        Ok(header_name) => {
-                                            match reqwest::header::HeaderValue::from_str(
-                                                &value_string,
-                                            ) {
-                                                Ok(header_value) => {
-                                                    req = req.header(header_name, header_value);
-                                                    buffer
-                                                        .headers_vec
-                                                        .push((key.clone(), value_string)); // Store for debugging
-                                                }
-                                                Err(e) => {
-                                                    logger.warning(&format!(
-                                                        "Worker {:?}: Invalid header value for '{}' in target '{}': {} (Value: '{}'). Skipping header.",
-                                                        thread_id, key, target.url, e, value_string
-                                                    ));
-                                                }
-                                            }
+                        // Apply rendered headers
+                        for (key, value_string) in &rendered_headers {
+                            match reqwest::header::HeaderName::from_bytes(key.as_bytes()) {
+                                Ok(header_name) => {
+                                    match reqwest::header::HeaderValue::from_str(value_string) {
+                                        Ok(header_value) => {
+                                            req_builder = req_builder.header(header_name, header_value);
                                         }
-                                        Err(e) => {
-                                            logger.warning(&format!(
-                                                "Worker {:?}: Invalid header name '{}' in target '{}': {}. Skipping header.",
-                                                thread_id, key, target.url, e
-                                            ));
-                                        }
+                                        Err(e) => logger.warning(&format!("Worker {:?}: Invalid pre-rendered header value for '{}' in target '{}': {} (Value: '{}'). Skipping header.", thread_id, key, target_url, e, value_string)),
                                     }
                                 }
-                                Err(e) => {
-                                    logger.warning(&format!(
-                                        "Worker {:?}: Failed to render template for header '{}' in target '{}': {}. Skipping header.",
-                                        thread_id, key, target.url, e
-                                    ));
-                                }
+                                Err(e) => logger.warning(&format!("Worker {:?}: Invalid pre-rendered header name '{}' in target '{}': {}. Skipping header.", thread_id, key, target_url, e)),
                             }
                         }
 
-                        // Render and prepare params
-                        for (key, template) in &target.params {
-                            let value_result =
-                                render_ast_node(template, &mut context, logger.clone());
-                            match value_result {
-                                Ok(value_string) => {
-                                    buffer.params_vec.push((key.clone(), value_string));
-                                }
-                                Err(e) => {
-                                    logger.warning(&format!(
-                                        "Worker {:?}: Failed to render template for param '{}' in target '{}': {}. Skipping param.",
-                                        thread_id, key, target.url, e
-                                    ));
-                                }
-                            }
-                        }
-
-                        // Apply params based on method
-                        match target.method {
+                        // Apply rendered params
+                        match method {
                             Method::GET | Method::DELETE | Method::OPTIONS => {
-                                req = req.query(&buffer.params_vec);
+                                req_builder = req_builder.query(&rendered_params);
                             }
                             Method::POST | Method::PUT | Method::PATCH => {
-                                req = req.form(&buffer.params_vec);
+                                req_builder = req_builder.form(&rendered_params);
                             }
                             _ => {
                                 logger.warning(&format!(
-                                    "Worker {:?}: Unsupported method {} for params/body",
-                                    thread_id, target.method
+                                    "Worker {:?}: Unsupported method {} for params/body with pre-generated data for target '{}'",
+                                    thread_id, method, target_url
                                 ));
+                                // Skip this request if method is not supported for params
+                                continue 'main_loop;
                             }
                         }
 
-                        // 发送请求并处理结果
                         let start_time = Instant::now();
-                        let res = req.send().await;
+                        let res = req_builder.send().await;
                         let timestamp = Instant::now();
                         let duration = timestamp.duration_since(start_time);
 
                         let (success, status_code, error_details) = match res {
                             Ok(response) => {
-                                let success = response.status().is_success();
+                                let success_status = response.status().is_success();
                                 let status = response.status();
-                                // Optionally read body for more details, but be careful with large responses
-                                // let body_text = response.text().await.unwrap_or_else(|e| format!("Error reading body: {}", e));
-                                (success, Some(status), None) // Store status code
+                                (success_status, Some(status), None)
                             }
-                            Err(e) => {
-                                // Request failed before getting a response
-                                (false, None, Some(e.to_string())) // Store error string
-                            }
+                            Err(e) => (false, None, Some(e.to_string())),
                         };
 
                         let attack_message = format!(
                             "[Request]\nURL: {}\nMethod: {}\nDuration: {:?}\nStatus: {}{}{}{}",
-                            target.url,
-                            target.method,
+                            target_url,
+                            method,
                             duration,
                             status_code.map_or_else(|| "N/A".to_string(), |s| s.to_string()),
-                            if !buffer.headers_vec.is_empty() {
+                            if !rendered_headers.is_empty() {
                                 format!(
                                     "\nHeaders:\n{}",
-                                    buffer
-                                        .headers_vec
+                                    rendered_headers
                                         .iter()
                                         .map(|(k, v)| format!("  {}: {}", k, v))
                                         .collect::<Vec<_>>()
                                         .join("\n")
                                 )
-                            } else {
-                                String::new()
-                            },
-                            if !buffer.params_vec.is_empty() {
+                            } else { String::new() },
+                            if !rendered_params.is_empty() {
                                 format!(
                                     "\nParams: {}",
-                                    buffer
-                                        .params_vec
+                                    rendered_params
                                         .iter()
                                         .map(|(k, v)| format!("{}={}", k, v))
                                         .collect::<Vec<_>>()
                                         .join("&")
                                 )
-                            } else {
-                                String::new()
-                            },
-                            error_details
-                                .as_ref()
-                                .map(|err| format!("\nError: {}", err))
-                                .unwrap_or_default()
+                            } else { String::new() },
+                            error_details.as_ref().map(|err| format!("\nError: {}", err)).unwrap_or_default()
                         );
-                        logger.info(&attack_message); // Log detailed debug info regardless of success
 
-                        // 发送统计信息到UI
                         let update = TargetUpdate {
-                            id: target.id, // Pass the target's unique ID
-                            url: target.url.clone(),
+                            id: target_id,
+                            url: target_url, // target_url is already a String
                             success,
                             timestamp,
-                            // Pass the detailed debug message to the stats channel
                             debug: Some(attack_message),
-                            // Populate network_error only if the request failed before getting a status
-                            network_error: error_details, // error_details is Some(String) only on Err(e)
-                            thread_id,                    // Include thread_id
+                            network_error: error_details,
+                            thread_id,
                         };
-                        if let Err(e) = stats_tx.send(update).await {
-                            logger.warning(&format!("Failed to send stats update: {}", e));
+                        if stats_tx.send(update).await.is_err() {
+                            logger.warning(&format!("Worker {:?}: Failed to send stats update for target {}. UI channel likely closed.", thread_id, target_id));
+                            // If UI channel is closed, worker might as well stop.
+                            break 'main_loop;
                         }
                     }
-                    WorkerMessage::Resume => {}
+                    Err(broadcast::error::RecvError::Closed) => {
+                        logger.info(&format!("Worker {:?}: Data channel closed. Exiting.", thread_id));
+                        break 'main_loop;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        logger.warning(&format!("Worker {:?}: Data channel lagged by {} messages. Worker might be too slow or generator too fast.", thread_id, n));
+                    }
                 }
             }
-            Err(broadcast::error::RecvError::Closed) => {
-                logger.warning(&format!(
-                    "Worker {:?} channel disconnected, exiting.",
-                    thread_id
-                ));
-                break 'main_loop;
-            }
-            Err(broadcast::error::RecvError::Lagged(_)) => {}
         }
-    }
-
+    } // This is the correct closing brace for the outer 'main_loop
     logger.info(&format!("Worker thread {:?} finished", thread_id));
 }

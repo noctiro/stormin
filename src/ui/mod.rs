@@ -1,10 +1,11 @@
-use crate::app::FocusedWidget;
+pub mod event_handler;
+pub mod stats_updater;
 use ratatui::{
     prelude::*,
     symbols,
     widgets::{
-        Block, BorderType, Borders, Cell, Gauge, LineGauge, Paragraph, Row, Sparkline,
-        Table, TableState, Wrap,
+        Block, BorderType, Borders, Cell, Gauge, LineGauge, Paragraph, Row, Sparkline, Table,
+        TableState, Wrap,
     },
 };
 use std::collections::VecDeque;
@@ -34,7 +35,7 @@ pub struct TargetStats {
     pub last_network_error: Option<String>, // 存储最后的网络错误信息
 }
 
-#[derive(Clone, Debug)] // Add Clone and Debug derives
+#[derive(Clone, Debug)]
 pub struct DebugInfo {
     // Make struct public
     pub timestamp: Instant,
@@ -57,34 +58,26 @@ pub struct Stats {
     pub running_state: RunningState,
     // Store recent debug logs. Should be capped at MAX_CONSOLE_LOGS when adding new logs.
     pub debug_logs: VecDeque<DebugInfo>,
-    pub console_auto_scroll: bool, // True if console should auto-scroll to bottom
     pub rps_history: VecDeque<u64>, // History of requests per second for sparkline
     pub successful_requests_per_second_history: VecDeque<u64>, // History of successful requests per second
     pub success_rate_history: VecDeque<u64>, // History of success rate for sparkline
-    // Fields for scrollable state
-    pub console_scroll_offset: u16,
-    // pub thread_table_offset: usize, // Removed for new multi-column display
-    // pub thread_table_offset_right: usize, // Removed: For widescreen right panel
-    pub target_table_offset: usize,
 }
 
 // Structure to hold all relevant layout rectangles
 #[derive(Default, Clone, Copy)]
 pub struct LayoutRects {
     pub console: Rect,
-    pub threads: Rect, // Renamed from threads_left, threads_right removed
+    pub threads: Rect,
     pub targets: Rect,
     pub pause_btn: Rect,
     pub resume_btn: Rect,
     pub quit_btn: Rect,
-    // Add other rects if needed, e.g., for the main title area
     pub title_bar: Rect,
 }
 
 pub fn draw_ui<B: Backend>(
     terminal: &mut Terminal<B>,
     stats: &Stats,
-    focused: FocusedWidget,
 ) -> std::io::Result<LayoutRects> {
     let mut layout_rects = LayoutRects::default();
 
@@ -152,11 +145,10 @@ pub fn draw_ui<B: Backend>(
             .collect();
 
         let num_logs = debug_messages.len() as u16;
-        let visible_height = debug_area.height.saturating_sub(2); // 减去边框高度
-        // Use stats.console_scroll_offset for scrolling
-        // Ensure current_scroll_offset does not cause underflow if num_logs < visible_height
+        let visible_height = debug_area.height.saturating_sub(2); // Subtract 2 for borders
+
         let current_scroll_offset = if num_logs > visible_height {
-            stats.console_scroll_offset.min(num_logs - visible_height)
+            num_logs - visible_height
         } else {
             0 // No scroll needed if content fits
         };
@@ -172,11 +164,7 @@ pub fn draw_ui<B: Backend>(
                     ))
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(if focused == FocusedWidget::Console {
-                        Style::default().fg(Color::Yellow)
-                    } else {
-                        Style::default().fg(Color::DarkGray)
-                    }),
+                    .border_style(Style::default().fg(Color::DarkGray)),
             )
             .wrap(Wrap { trim: false })
             .scroll((current_scroll_offset, 0)); // Apply the controlled scroll offset
@@ -566,20 +554,26 @@ pub fn draw_ui<B: Backend>(
                 .max(1); // Ensure it's at least 1
 
             for target_stat in &stats.targets {
-                let target_name = target_stat.url.split('/').last().unwrap_or(&target_stat.url);
+                let target_name = target_stat
+                    .url
+                    .split('/')
+                    .last()
+                    .unwrap_or(&target_stat.url);
                 // let total_req = target_stat.success + target_stat.failure;
 
                 let success_bar_len = if max_total_req > 0 {
-                    (target_stat.success as f64 / max_total_req as f64 * max_bar_width as f64) as u16
+                    (target_stat.success as f64 / max_total_req as f64 * max_bar_width as f64)
+                        as u16
                 } else {
                     0
                 };
                 let failure_bar_len = if max_total_req > 0 {
-                    (target_stat.failure as f64 / max_total_req as f64 * max_bar_width as f64) as u16
+                    (target_stat.failure as f64 / max_total_req as f64 * max_bar_width as f64)
+                        as u16
                 } else {
                     0
                 };
-                
+
                 // Ensure total bar length doesn't exceed max_bar_width due to rounding
                 let current_total_bar = success_bar_len + failure_bar_len;
                 let (s_len, f_len) = if current_total_bar > max_bar_width {
@@ -593,7 +587,6 @@ pub fn draw_ui<B: Backend>(
                     (success_bar_len, failure_bar_len)
                 };
 
-
                 let line_spans = vec![
                     Span::styled(
                         format!("{:<15.15}: ", target_name), // Truncate/pad name
@@ -603,14 +596,7 @@ pub fn draw_ui<B: Backend>(
                         "▒".repeat(s_len as usize),
                         Style::default().fg(Color::Green),
                     ),
-                    Span::styled(
-                        "▒".repeat(f_len as usize),
-                        Style::default().fg(Color::Red),
-                    ),
-                    Span::raw(format!(
-                        " (S:{} F:{})",
-                        target_stat.success, target_stat.failure
-                    )),
+                    Span::styled("▒".repeat(f_len as usize), Style::default().fg(Color::Red)),
                 ];
                 lines.push(Line::from(line_spans));
             }
@@ -674,9 +660,9 @@ pub fn draw_ui<B: Backend>(
         const TID_PREFIX_WIDTH: usize = 4; // "TID:"
         const TID_VALUE_WIDTH: usize = 15; // Max width for ThreadId display (e.g., "ThreadId(XX)")
         const REQ_PREFIX_WIDTH: usize = 2; // "R:"
-        const REQ_VALUE_WIDTH: usize = 6;  // Max width for requests (e.g., "999999")
+        const REQ_VALUE_WIDTH: usize = 6; // Max width for requests (e.g., "999999")
         const ACT_PREFIX_WIDTH: usize = 2; // "A:"
-        const ACT_VALUE_WIDTH: usize = 6;  // Max width for active time (e.g., "123.4s")
+        const ACT_VALUE_WIDTH: usize = 6; // Max width for active time (e.g., "123.4s")
         const ITEM_SPACING: u16 = 2; // Number of spaces between items
 
         // Calculate total width for one formatted item
@@ -716,18 +702,29 @@ pub fn draw_ui<B: Backend>(
                         &tid_str
                     };
 
-                    let label_style = Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD);
+                    let label_style = Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD);
 
-                    line_spans.push(Span::styled(format!("{:<TID_PREFIX_WIDTH$}", "TID:"), label_style));
+                    line_spans.push(Span::styled(
+                        format!("{:<TID_PREFIX_WIDTH$}", "TID:"),
+                        label_style,
+                    ));
                     line_spans.push(Span::raw(format!("{:<TID_VALUE_WIDTH$}", tid_display))); // Keep value style default or specific
 
-                    line_spans.push(Span::styled(format!("{:<REQ_PREFIX_WIDTH$}", "R:"), label_style));
+                    line_spans.push(Span::styled(
+                        format!("{:<REQ_PREFIX_WIDTH$}", "R:"),
+                        label_style,
+                    ));
                     line_spans.push(Span::styled(
                         format!("{:<REQ_VALUE_WIDTH$}", thread_stat.requests),
                         Style::default().fg(Color::Cyan), // Keep original value style
                     ));
 
-                    line_spans.push(Span::styled(format!("{:<ACT_PREFIX_WIDTH$}", "A:"), label_style));
+                    line_spans.push(Span::styled(
+                        format!("{:<ACT_PREFIX_WIDTH$}", "A:"),
+                        label_style,
+                    ));
                     line_spans.push(Span::styled(
                         format!("{:<ACT_VALUE_WIDTH$.1}s", last_active_secs),
                         Style::default().fg(activity_color), // Keep original value style
@@ -740,7 +737,10 @@ pub fn draw_ui<B: Backend>(
                 lines.push(Line::from(line_spans));
             }
         } else {
-            lines.push(Line::from(Span::styled("No active threads.", Style::default().fg(Color::DarkGray))));
+            lines.push(Line::from(Span::styled(
+                "No active threads.",
+                Style::default().fg(Color::DarkGray),
+            )));
         }
 
         let thread_paragraph = Paragraph::new(lines)
@@ -837,7 +837,7 @@ pub fn draw_ui<B: Backend>(
         let target_rows_iter: Vec<Row> = target_rows; // Ensure type is explicit for Table::new
         let target_table_widget = Table::new(target_rows_iter)
             .widths(&[
-                Constraint::Percentage(28),        // URL (Min width, can expand)
+                Constraint::Percentage(28), // URL (Min width, can expand)
                 Constraint::Length(8),      // S/F
                 Constraint::Length(8),      // Rate
                 Constraint::Length(7),      // RPS
@@ -856,17 +856,10 @@ pub fn draw_ui<B: Backend>(
                     ))
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(if focused == FocusedWidget::TargetTable {
-                        Style::default().fg(Color::Yellow)
-                    } else {
-                        Style::default().fg(Color::DarkGray)
-                    }),
+                    .border_style(Style::default().fg(Color::DarkGray)),
             );
-        // .highlight_style(Style::default().fg(Color::Black).bg(Color::LightYellow).add_modifier(Modifier::BOLD))) // Removed highlight
-        // .highlight_symbol("▶ "); // Removed highlight symbol
 
         let mut target_table_state = TableState::default();
-        *target_table_state.offset_mut() = stats.target_table_offset;
         layout_rects.targets = chunks[7]; // Restored index to 7
         f.render_stateful_widget(
             target_table_widget,

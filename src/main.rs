@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod data_generator;
 mod generator;
 mod logger;
 mod template;
@@ -7,24 +8,23 @@ mod ui;
 mod worker;
 
 use app::App;
-use std::{error::Error, io};
+use std::{env, error::Error, io};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // Create and initialize the application
-    // App::new remains synchronous
-    let mut app = match App::new("config.toml") {
+    let config_path = env::args()
+        .find(|arg| arg.starts_with("--config="))
+        .map(|arg| arg.trim_start_matches("--config=").to_string())
+        .unwrap_or_else(|| "config.toml".to_string());
+    let mut app = match App::new(&config_path) {
         Ok(app) => app,
         Err(e) => {
-            // If App creation fails (e.g., config error, TUI setup error),
-            // print the error and exit gracefully.
-            // Ensure terminal state is cleaned up if possible, though App::drop handles this too.
             eprintln!("Failed to initialize application: {}", e);
             // Attempt to disable raw mode if it was enabled
             let _ = crossterm::terminal::disable_raw_mode();
             // Attempt to leave alternate screen if entered
             let _ = crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen);
-            return Err(e); // Propagate the error
+            return Err(e);
         }
     };
 

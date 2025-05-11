@@ -4,6 +4,8 @@
 
 目前仅在 `headers` 和 `params` 中生效。
 
+每个 target 中的用户自定义变量在其各自的 target 内部是共享的，但与其他 target 是相互独立的。
+
 快速查看 - [内置函数列表](#内置函数列表)
 
 ---
@@ -64,25 +66,26 @@ ${<函数名|变量名>[(:<定义名>)][:<参数1>[,<参数2>,…]]}
 
 ## 内置函数列表
 
-| 函数                | 参数                     | 说明                   | 示例                                              |
-| ------------------- | ------------------------ | ---------------------- | ------------------------------------------------- |
-| `username`          | —                        | 随机用户名             | `${username}`                                     |
-| `password`          | —                        | 随机密码               | `${password}`                                     |
-| `qqid`              | —                        | 随机 QQ 号             | `${qqid}`                                         |
-| `email`             | —                        | 随机电子邮箱           | `${email}`                                        |
-| `cn_mobile`         | —                        | 随机中国电话号码       | `${cn_mobile}`                                    |
-| `chinese_name`      | —                        | 随机中国姓名(3-4 个字) | `${chinese_name}`                                 |
-| `chinese_id`        | —                        | 随机中国身份证号码     | `${chinese_id}`                                   |
-| `chinese_bank_card` | —                        | 随机中国银行卡号码     | `${chinese_bank_card}`                            |
-| `ipv4`              | —                        | 随机 IPv4 地址         | `${ipv4}`                                         |
-| `ipv6`              | —                        | 随机 IPv6 地址         | `${ipv6}`                                         |
-| `base64`            | `string`                 | Base64 编码            | `${base64:"test"}` → `dGVzdA==`                   |
-| `upper`             | `string`                 | 转大写                 | `${upper:"hello"}` → `HELLO`                      |
-| `lower`             | `string`                 | 转小写                 | `${lower:"HELLO"}` → `hello`                      |
-| `replace`           | `str`, `old`, `new`      | 全部替换               | `${replace:"a.b.c",".","-"}` → `a-b-c`            |
-| `substr`            | `str`, `start`\[, `len`] | 取子串                 | `${substr:"abcdef",1,3}` → `bcd`                  |
-| `random`            | `type`, …                | 生成随机值             | `${random:chars,8}` `${random:number,1,100}`      |
-| `choose_random`     | `arg1`[, `arg2`, ...]    | 从参数中随机选一个     | `${choose_random:"a","b","c"}`                    |
+| 函数                | 参数                     | 说明                   | 示例                                         |
+| ------------------- | ------------------------ | ---------------------- | -------------------------------------------- |
+| `username`          | —                        | 随机用户名             | `${username}`                                |
+| `password`          | —                        | 随机密码               | `${password}`                                |
+| `qqid`              | —                        | 随机 QQ 号             | `${qqid}`                                    |
+| `email`             | —                        | 随机电子邮箱           | `${email}`                                   |
+| `cn_mobile`         | —                        | 随机中国电话号码       | `${cn_mobile}`                               |
+| `chinese_name`      | —                        | 随机中国姓名(3-4 个字) | `${chinese_name}`                            |
+| `chinese_id`        | —                        | 随机中国身份证号码     | `${chinese_id}`                              |
+| `chinese_bank_card` | —                        | 随机中国银行卡号码     | `${chinese_bank_card}`                       |
+| `ipv4`              | —                        | 随机 IPv4 地址         | `${ipv4}`                                    |
+| `ipv6`              | —                        | 随机 IPv6 地址         | `${ipv6}`                                    |
+| `user_agent`        | —                        | 随机 User Agent        | `${user_agent}`                              |
+| `base64`            | `string`                 | Base64 编码            | `${base64:"test"}` → `dGVzdA==`              |
+| `upper`             | `string`                 | 转大写                 | `${upper:"hello"}` → `HELLO`                 |
+| `lower`             | `string`                 | 转小写                 | `${lower:"HELLO"}` → `hello`                 |
+| `replace`           | `str`, `old`, `new`      | 全部替换               | `${replace:"a.b.c",".","-"}` → `a-b-c`       |
+| `substr`            | `str`, `start`\[, `len`] | 取子串                 | `${substr:"abcdef",1,3}` → `bcd`             |
+| `random`            | `type`, …                | 生成随机值             | `${random:chars,8}` `${random:number,1,100}` |
+| `choose_random`     | `arg1`[, `arg2`, ...]    | 从参数中随机选一个     | `${choose_random:"a","b","c"}`               |
 
 ---
 

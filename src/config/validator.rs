@@ -17,6 +17,11 @@ pub enum ConfigError {
     DuplicateVariableDefinition(String), // Duplicate variable name
     CircularVariableDependency(String),  // Circular dependency detected
     UndefinedVariableReference(String),  // Variable reference not defined
+    // New errors for rate control parameters
+    InvalidTargetRps(String),
+    InvalidMinSuccessRate(String),
+    InvalidRpsAdjustFactor(String),
+    InvalidSuccessRatePenaltyFactor(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -37,6 +42,34 @@ impl fmt::Display for ConfigError {
             }
             ConfigError::UndefinedVariableReference(name) => {
                 write!(f, "Undefined variable reference: '{}'", name)
+            }
+            ConfigError::InvalidTargetRps(value) => {
+                write!(
+                    f,
+                    "Invalid target_rps value: '{}'. Must be a positive number.",
+                    value
+                )
+            }
+            ConfigError::InvalidMinSuccessRate(value) => {
+                write!(
+                    f,
+                    "Invalid min_success_rate value: '{}'. Must be between 0.0 and 1.0.",
+                    value
+                )
+            }
+            ConfigError::InvalidRpsAdjustFactor(value) => {
+                write!(
+                    f,
+                    "Invalid rps_adjust_factor value: '{}'. Must be a positive number.",
+                    value
+                )
+            }
+            ConfigError::InvalidSuccessRatePenaltyFactor(value) => {
+                write!(
+                    f,
+                    "Invalid success_rate_penalty_factor value: '{}'. Must be >= 1.0.",
+                    value
+                )
             }
         }
     }
@@ -106,24 +139,23 @@ struct ValidationContext {
     current_path: Vec<String>,      // For cycle detection path reporting
 }
 
-
 /// Validates all template ASTs within a single target for consistency.
 pub fn validate_target_templates(
-    params: &[(String, TemplateAstNode)], // Receive list of params for the target
+    templates: &[(String, TemplateAstNode)], // Combined list of templates (params and headers) for the target
     builtin_functions: &HashSet<String>,
 ) -> Result<(), ConfigError> {
     let mut context = ValidationContext::default();
 
-    // First pass: Collect all definitions across all params in this target
-    for (_, ast_node) in params {
+    // First pass: Collect all definitions across all templates in this target
+    for (_, ast_node) in templates {
         collect_definitions(ast_node, &mut context.defined_vars)?;
     }
 
-    // Second pass: Validate references and cycles for each param AST using the collected context
-    for (_, ast_node) in params {
-         // Reset cycle detection state for each independent AST validation run
-         context.visiting_vars.clear();
-         context.current_path.clear();
+    // Second pass: Validate references and cycles for each template AST using the collected context
+    for (_, ast_node) in templates {
+        // Reset cycle detection state for each independent AST validation run
+        context.visiting_vars.clear();
+        context.current_path.clear();
         validate_references_and_cycles(ast_node, &mut context, builtin_functions)?;
     }
 
@@ -222,5 +254,38 @@ fn validate_references_and_cycles(
         }
         TemplateAstNode::Static(_) => {} // Static text doesn't need reference validation
     }
+    Ok(())
+}
+
+/// Validates the dynamic rate control parameters from RawConfig.
+pub fn validate_rate_control_config(
+    raw_config: &crate::config::loader::RawConfig,
+) -> Result<(), ConfigError> {
+    if let Some(rps) = raw_config.target_rps {
+        if rps <= 0.0 {
+            return Err(ConfigError::InvalidTargetRps(rps.to_string()));
+        }
+    }
+
+    if let Some(rate) = raw_config.min_success_rate {
+        if !(0.0..=1.0).contains(&rate) {
+            return Err(ConfigError::InvalidMinSuccessRate(rate.to_string()));
+        }
+    }
+
+    if let Some(factor) = raw_config.rps_adjust_factor {
+        if factor <= 0.0 {
+            return Err(ConfigError::InvalidRpsAdjustFactor(factor.to_string()));
+        }
+    }
+
+    if let Some(factor) = raw_config.success_rate_penalty_factor {
+        if factor < 1.0 {
+            return Err(ConfigError::InvalidSuccessRatePenaltyFactor(
+                factor.to_string(),
+            ));
+        }
+    }
+
     Ok(())
 }

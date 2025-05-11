@@ -3,7 +3,16 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     config::loader::TemplateAstNode,
     generator::{
-        chinese_bank_card::generate_chinese_bank_card, chinese_id::generate_chinese_id, chinese_name::generate_chinese_name, cn_mobile::generate_cn_mobile, email::generate_email, ip::{generate_ipv4, generate_ipv6}, password::generate_password, qqid::generate_qq_id, username::generate_username
+        chinese_bank_card::generate_chinese_bank_card,
+        chinese_id::generate_chinese_id,
+        chinese_name::generate_chinese_name,
+        cn_mobile::generate_cn_mobile,
+        email::generate_email,
+        ip::{generate_ipv4, generate_ipv6},
+        password::generate_password,
+        qqid::generate_qq_id,
+        user_agent::generate_user_agent,
+        username::generate_username,
     },
     logger::Logger,
 };
@@ -88,19 +97,23 @@ pub fn apply_function(
         }
         "ipv4" => {
             if !args.is_empty() {
-                logger.warning(&format!(
-                    "Warning: ipv4 function does not take arguments."
-                ));
+                logger.warning(&format!("Warning: ipv4 function does not take arguments."));
             }
             Ok(generate_ipv4(&mut rng()))
         }
         "ipv6" => {
             if !args.is_empty() {
-                logger.warning(&format!(
-                    "Warning: ipv6 function does not take arguments."
-                ));
+                logger.warning(&format!("Warning: ipv6 function does not take arguments."));
             }
             Ok(generate_ipv6(&mut rng()))
+        }
+        "user_agent" => {
+            if !args.is_empty() {
+                logger.warning(&format!(
+                    "Warning: user_agent function does not take arguments."
+                ));
+            }
+            Ok(generate_user_agent(&mut rng()))
         }
         "base64" => match args.first() {
             Some(arg) => Ok(STANDARD.encode(arg)),
@@ -347,6 +360,7 @@ pub fn get_builtin_function_names() -> HashSet<String> {
         "chinese_bank_card",
         "ipv4",
         "ipv6",
+        "user_agent",
     ]
     .iter()
     .map(|&s| s.to_string())

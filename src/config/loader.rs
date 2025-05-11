@@ -18,7 +18,7 @@ struct TemplateParser;
 pub enum TemplateAstNode {
     Static(String),
     FunctionCall {
-        def_name: Option<String>, // Added: Optional name for variable definition
+        def_name: Option<String>, // Optional name for variable definition
         name: String,
         args: Vec<TemplateAstNode>,
     },
@@ -34,10 +34,14 @@ pub struct RawConfig {
     pub proxy_file: Option<String>,
     pub threads: Option<usize>,
     pub timeout: Option<u64>,
+    // 新增的动态速率配置项
+    pub target_rps: Option<f64>,
+    pub min_success_rate: Option<f64>,            // 0.0 to 1.0
+    pub rps_adjust_factor: Option<f64>,           // e.g., 0.1 for 10% adjustment per step
+    pub success_rate_penalty_factor: Option<f64>, // e.g., 1.5 to multiply delay by 1.5
     #[serde(rename = "Target")]
     pub targets: Vec<RawTarget>,
 }
-
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawTarget {
@@ -67,9 +71,12 @@ impl ProxyConfig {
         // First try to parse as full URL format
         if let Ok(url) = url::Url::parse(line) {
             let scheme = url.scheme().to_string();
-            let host = url.host_str().ok_or_else(|| {
-                ConfigError::ProxyParseError(format!("Missing host in proxy URL: {}", line))
-            })?.to_string();
+            let host = url
+                .host_str()
+                .ok_or_else(|| {
+                    ConfigError::ProxyParseError(format!("Missing host in proxy URL: {}", line))
+                })?
+                .to_string();
             let port = url.port_or_known_default().ok_or_else(|| {
                 ConfigError::ProxyParseError(format!("Missing port in proxy URL: {}", line))
             })?;
@@ -105,16 +112,18 @@ impl ProxyConfig {
 
         let host_port_parts: Vec<&str> = host_port.split(':').collect();
         if host_port_parts.len() != 2 {
-            return Err(ConfigError::ProxyParseError(
-                format!("Invalid host:port format in proxy: {}", host_port)
-            ));
+            return Err(ConfigError::ProxyParseError(format!(
+                "Invalid host:port format in proxy: {}",
+                host_port
+            )));
         }
 
         let host = host_port_parts[0].to_string();
         let port: u16 = host_port_parts[1].parse().map_err(|e| {
-            ConfigError::ProxyParseError(
-                format!("Invalid port '{}' in proxy: {}", host_port_parts[1], e)
-            )
+            ConfigError::ProxyParseError(format!(
+                "Invalid port '{}' in proxy: {}",
+                host_port_parts[1], e
+            ))
         })?;
         let (username, password) = match auth {
             Some((user, pass)) => (Some(user.to_string()), Some(pass.to_string())),
@@ -138,6 +147,11 @@ pub struct AttackConfig {
     pub timeout: u64,
     pub targets: Vec<CompiledTarget>,
     pub proxies: Vec<ProxyConfig>, // 类型改为 ProxyConfig
+    // 新增的动态速率配置项 (已处理，可能带默认值)
+    pub target_rps: Option<f64>,
+    pub min_success_rate: Option<f64>,
+    pub rps_adjust_factor: Option<f64>,
+    pub success_rate_penalty_factor: Option<f64>,
 }
 
 #[derive(Clone, Debug)]
@@ -157,12 +171,11 @@ fn parse_template_string(input: &str) -> Result<TemplateAstNode, ConfigError> {
     let pairs = TemplateParser::parse(Rule::template, input)
         .map_err(|e| ConfigError::TemplateParseError(e.to_string()))?;
     // We expect a single 'template' rule match at the top level
-    let top_pair = pairs.peek().ok_or_else(|| {
-        ConfigError::TemplateParseError("Empty parse result".into())
-    })?;
-    build_ast_from_pair(top_pair).map_err(|e| {
-        ConfigError::TemplateParseError(format!("Failed to build AST: {}", e))
-    })
+    let top_pair = pairs
+        .peek()
+        .ok_or_else(|| ConfigError::TemplateParseError("Empty parse result".into()))?;
+    build_ast_from_pair(top_pair)
+        .map_err(|e| ConfigError::TemplateParseError(format!("Failed to build AST: {}", e)))
 }
 
 // Recursively builds the AST from Pest parse pairs
@@ -179,7 +192,9 @@ fn build_ast_from_pair(
 
         Rule::expression => {
             let mut inner_rules = pair.into_inner();
-            let identifier_pair = inner_rules.next().expect("Expression must have an identifier");
+            let identifier_pair = inner_rules
+                .next()
+                .expect("Expression must have an identifier");
             let name = identifier_pair.as_str().to_string();
 
             let mut def_name: Option<String> = None;
@@ -196,17 +211,20 @@ fn build_ast_from_pair(
 
             // Check for optional arguments
             if let Some(args_pair) = inner_rules.next() {
-                 if args_pair.as_rule() == Rule::arguments {
-                     args = args_pair.into_inner().map(build_ast_from_pair).collect::<Result<_,_>>()?;
-                 }
+                if args_pair.as_rule() == Rule::arguments {
+                    args = args_pair
+                        .into_inner()
+                        .map(build_ast_from_pair)
+                        .collect::<Result<_, _>>()?;
+                }
             }
 
             // Create the node, including the optional definition name
-                 Ok(TemplateAstNode::FunctionCall {
-                     def_name,
-                     name,
-                     args, // Use parsed args
-                 })
+            Ok(TemplateAstNode::FunctionCall {
+                def_name,
+                name,
+                args, // Use parsed args
+            })
         }
 
         Rule::argument => build_ast_from_pair(pair.into_inner().next().unwrap()),
@@ -252,6 +270,10 @@ fn build_ast_from_pair(
 pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error>> {
     let content = fs::read_to_string(path)?;
     let raw: RawConfig = toml::from_str(&content)?;
+
+    // Validate rate control parameters first
+    super::validator::validate_rate_control_config(&raw)
+        .map_err(|e| Box::new(e) as Box<dyn Error>)?;
 
     // Get the set of built-in function names from the template module
     let builtin_functions = crate::template::get_builtin_function_names();
@@ -311,83 +333,109 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
 
     let mut compiled: Vec<CompiledTarget> = Vec::new();
     let mut target_id_counter = 0; // Counter for generating unique IDs
-    'target_loop: for raw_t in raw.targets { // Add a label to the outer loop
+    'target_loop: for raw_t in raw.targets {
+        // Add a label to the outer loop
         // 使用更严格的验证逻辑
         if let Err(e) = super::validator::validate_target(&raw_t) {
-            eprintln!("[Configuration verification failed] Target '{}' was removed: {}", raw_t.url, e);
+            eprintln!(
+                "[Configuration verification failed] Target '{}' was removed: {}",
+                raw_t.url, e
+            );
             continue;
         }
 
-        let mut parsed_params = Vec::new(); // Temporary storage for parsed params
-        let mut parsed_headers = Vec::new(); // Temporary storage for parsed headers
-        let mut target_has_error = false; // Flag for validation errors
+        let mut parsed_params = Vec::new();
+        let mut parsed_headers = Vec::new();
+        let mut all_parsed_templates: Vec<(String, TemplateAstNode)> = Vec::new(); // For combined validation
+        let mut target_has_error = false;
 
-        // Parse and validate params
+        // Parse params
         if let Some(map) = raw_t.params {
             for (k, v) in map {
                 match parse_template_string(&v) {
                     Ok(ast_node) => {
-                        parsed_params.push((k.clone(), ast_node));
+                        parsed_params.push((k.clone(), ast_node.clone()));
+                        all_parsed_templates.push((k.clone(), ast_node));
                     }
                     Err(e) => {
-                        eprintln!("[Configuration verification failed] Target '{}', Param '{}': Failed to parse template: {}", raw_t.url, k, e);
+                        eprintln!(
+                            "[Configuration verification failed] Target '{}', Param '{}': Failed to parse template: {}",
+                            raw_t.url, k, e
+                        );
                         target_has_error = true;
-                        break;
+                        break; // Stop processing this target's params on first error
                     }
-                };
-            }
-        }
-        if !target_has_error {
-            parsed_params.sort_by_key(|(_, node)| {
-                match node {
-                    TemplateAstNode::FunctionCall { def_name, .. } if def_name.is_some() => 0,
-                    _ => 1,
-                }
-            });
-            if let Err(e) = super::validator::validate_target_templates(&parsed_params, &builtin_functions) {
-                eprintln!("[Configuration verification failed] Target '{}' (Params): {}", raw_t.url, e);
-                target_has_error = true;
-            }
-        }
-
-        // Parse and validate headers
-        if !target_has_error { // Only proceed if params were okay
-            if let Some(map) = raw_t.headers {
-                for (k, v) in map {
-                    match parse_template_string(&v) {
-                        Ok(ast_node) => {
-                            parsed_headers.push((k.clone(), ast_node));
-                        }
-                        Err(e) => {
-                            eprintln!("[Configuration verification failed] Target '{}', Header '{}': Failed to parse template: {}", raw_t.url, k, e);
-                            target_has_error = true;
-                            break;
-                        }
-                    };
-                }
-            }
-            if !target_has_error { // Only sort and validate if parsing was okay
-                // Headers generally don't have the same definition-use dependency as params,
-                // but sorting can be kept for consistency if complex header templates arise.
-                // For now, simple sort by key might be sufficient or no sort.
-                // parsed_headers.sort_by_key(|(k, _)| k.clone()); // Example: sort by key
-
-                // Validate header templates
-                if let Err(e) = super::validator::validate_target_templates(&parsed_headers, &builtin_functions) {
-                    eprintln!("[Configuration verification failed] Target '{}' (Headers): {}", raw_t.url, e);
-                    target_has_error = true;
                 }
             }
         }
-
-        // If any parsing or validation error occurred, skip this target
         if target_has_error {
-            eprintln!("[Configuration verification failed] Skipping Target '{}' due to errors.", raw_t.url);
-            continue 'target_loop; // Continue to the next target
+            eprintln!(
+                "[Configuration verification failed] Skipping Target '{}' due to param parsing errors.",
+                raw_t.url
+            );
+            continue 'target_loop;
+        }
+
+        // Parse headers
+        if let Some(map) = raw_t.headers {
+            for (k, v) in map {
+                match parse_template_string(&v) {
+                    Ok(ast_node) => {
+                        parsed_headers.push((k.clone(), ast_node.clone()));
+                        all_parsed_templates.push((k.clone(), ast_node));
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[Configuration verification failed] Target '{}', Header '{}': Failed to parse template: {}",
+                            raw_t.url, k, e
+                        );
+                        target_has_error = true;
+                        break; // Stop processing this target's headers on first error
+                    }
+                }
+            }
+        }
+        if target_has_error {
+            eprintln!(
+                "[Configuration verification failed] Skipping Target '{}' due to header parsing errors.",
+                raw_t.url
+            );
+            continue 'target_loop;
+        }
+
+        // Sort all templates for this target (definitions first)
+        all_parsed_templates.sort_by_key(|(_, node)| match node {
+            TemplateAstNode::FunctionCall { def_name, .. } if def_name.is_some() => 0,
+            _ => 1,
+        });
+
+        // Validate all templates for this target together
+        if let Err(e) =
+            super::validator::validate_target_templates(&all_parsed_templates, &builtin_functions)
+        {
+            eprintln!(
+                "[Configuration verification failed] Target '{}': {}",
+                raw_t.url, e
+            );
+            target_has_error = true;
+        }
+
+        if target_has_error {
+            eprintln!(
+                "[Configuration verification failed] Skipping Target '{}' due to template validation errors.",
+                raw_t.url
+            );
+            continue 'target_loop;
         }
 
         // If everything is valid, proceed
-        let method = match raw_t.method.as_deref().unwrap_or("GET").to_uppercase().as_str() {
+        let method = match raw_t
+            .method
+            .as_deref()
+            .unwrap_or("GET")
+            .to_uppercase()
+            .as_str()
+        {
             "GET" => reqwest::Method::GET,
             "POST" => reqwest::Method::POST,
             "PUT" => reqwest::Method::PUT,
@@ -397,7 +445,10 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
             "PATCH" => reqwest::Method::PATCH,
             "TRACE" => reqwest::Method::TRACE,
             m => {
-                eprintln!("Skipping invalid target '{}': Invalid HTTP method {}", raw_t.url, m);
+                eprintln!(
+                    "Skipping invalid target '{}': Invalid HTTP method {}",
+                    raw_t.url, m
+                );
                 continue;
             }
         };
@@ -417,12 +468,20 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
         return Err(ConfigError::NoTargets.into());
     }
 
+    // 从 RawConfig 读取新的速率控制参数
+    let target_rps = raw.target_rps;
+    let min_success_rate = raw.min_success_rate.map(|val| val.clamp(0.0, 1.0)); // Ensure 0.0-1.0
+    let rps_adjust_factor = raw.rps_adjust_factor.map(|val| val.max(0.0)); // Ensure non-negative
+    let success_rate_penalty_factor = raw.success_rate_penalty_factor.map(|val| val.max(1.0)); // Ensure >= 1.0
+
     Ok(AttackConfig {
         threads,
         timeout,
         targets: compiled,
         proxies,
+        target_rps,
+        min_success_rate,
+        rps_adjust_factor,
+        success_rate_penalty_factor,
     })
 }
-
-
