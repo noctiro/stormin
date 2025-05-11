@@ -1,8 +1,10 @@
+use crate::app::FocusedWidget;
 use ratatui::{
     prelude::*,
     symbols,
     widgets::{
-        BarChart, Block, BorderType, Borders, Cell, Gauge, LineGauge, Paragraph, Row, Table, Wrap, // Added Bar
+        Block, BorderType, Borders, Cell, Gauge, LineGauge, Paragraph, Row, Sparkline,
+        Table, TableState, Wrap,
     },
 };
 use std::collections::VecDeque;
@@ -53,10 +55,39 @@ pub struct Stats {
     pub memory_usage: u64,
     pub proxy_count: usize, // Add field for proxy count
     pub running_state: RunningState,
-    pub debug_logs: VecDeque<DebugInfo>, // Store recent debug logs
+    // Store recent debug logs. Should be capped at MAX_CONSOLE_LOGS when adding new logs.
+    pub debug_logs: VecDeque<DebugInfo>,
+    pub console_auto_scroll: bool, // True if console should auto-scroll to bottom
+    pub rps_history: VecDeque<u64>, // History of requests per second for sparkline
+    pub successful_requests_per_second_history: VecDeque<u64>, // History of successful requests per second
+    pub success_rate_history: VecDeque<u64>, // History of success rate for sparkline
+    // Fields for scrollable state
+    pub console_scroll_offset: u16,
+    // pub thread_table_offset: usize, // Removed for new multi-column display
+    // pub thread_table_offset_right: usize, // Removed: For widescreen right panel
+    pub target_table_offset: usize,
 }
 
-pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io::Result<()> {
+// Structure to hold all relevant layout rectangles
+#[derive(Default, Clone, Copy)]
+pub struct LayoutRects {
+    pub console: Rect,
+    pub threads: Rect, // Renamed from threads_left, threads_right removed
+    pub targets: Rect,
+    pub pause_btn: Rect,
+    pub resume_btn: Rect,
+    pub quit_btn: Rect,
+    // Add other rects if needed, e.g., for the main title area
+    pub title_bar: Rect,
+}
+
+pub fn draw_ui<B: Backend>(
+    terminal: &mut Terminal<B>,
+    stats: &Stats,
+    focused: FocusedWidget,
+) -> std::io::Result<LayoutRects> {
+    let mut layout_rects = LayoutRects::default();
+
     terminal.draw(|f| {
         let size = f.size();
 
@@ -74,18 +105,22 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
             .direction(Direction::Vertical)
             .margin(1)
             .constraints([
-                Constraint::Length(3), // 标题和控制按钮
-                Constraint::Length(3), // 系统状态
-                Constraint::Length(3), // 计数器
-                Constraint::Length(7), // 请求统计图表 (Increased height for labels)
-                Constraint::Length(3), // 进度条
-                Constraint::Min(5),    // 线程状态 (Min height, can expand)
-                Constraint::Percentage(60), // Target状态 (Takes a good portion of remaining space)
+                Constraint::Length(3),      // 标题和控制按钮 (chunks[0])
+                Constraint::Length(3),      // 系统状态 (chunks[1])
+                Constraint::Length(3),      // 计数器 (chunks[2])
+                Constraint::Length(3),      // Sparklines (chunks[3])
+                Constraint::Length(7),      // 请求统计图表 (chunks[4])
+                Constraint::Length(3),      // 进度条 (chunks[5])
+                Constraint::Length(5),      // 线程状态 (chunks[6]) - Reduced height
+                Constraint::Percentage(50), // Target状态 (chunks[7])
             ])
             .split(main_chunks[0]);
 
+        layout_rects.title_bar = chunks[0]; // Store the entire title bar rect
+
         // 调试窗口
-        let debug_area = main_chunks[1];
+        layout_rects.console = main_chunks[1]; // Store the rect for the console
+        let debug_area = layout_rects.console;
         let debug_messages: Vec<Line> = stats
             .debug_logs
             .iter()
@@ -118,10 +153,12 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
 
         let num_logs = debug_messages.len() as u16;
         let visible_height = debug_area.height.saturating_sub(2); // 减去边框高度
-        let scroll = if num_logs > visible_height {
-            (num_logs - visible_height, 0)
+        // Use stats.console_scroll_offset for scrolling
+        // Ensure current_scroll_offset does not cause underflow if num_logs < visible_height
+        let current_scroll_offset = if num_logs > visible_height {
+            stats.console_scroll_offset.min(num_logs - visible_height)
         } else {
-            (0, 0)
+            0 // No scroll needed if content fits
         };
 
         let debug_widget = Paragraph::new(debug_messages)
@@ -135,50 +172,157 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
                     ))
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(Color::DarkGray)), // Added consistent border style
+                    .border_style(if focused == FocusedWidget::Console {
+                        Style::default().fg(Color::Yellow)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    }),
             )
             .wrap(Wrap { trim: false })
-            .scroll(scroll);
+            .scroll((current_scroll_offset, 0)); // Apply the controlled scroll offset
         f.render_widget(debug_widget, debug_area);
 
         // 标题和状态
+        let title_area = chunks[0];
+        let title_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(10),    // Main title info (flexible)
+                Constraint::Length(27), // Buttons area (fixed width for 3 buttons * 9 width each)
+            ])
+            .split(title_area);
+
         let status_color = match stats.running_state {
-            RunningState::Running => Color::LightGreen,
-            RunningState::Paused => Color::LightYellow,
-            RunningState::Stopping => Color::LightRed,
+            RunningState::Running => Color::Rgb(0, 200, 0), // Brighter Green
+            RunningState::Paused => Color::Rgb(255, 165, 0), // Orange
+            RunningState::Stopping => Color::Rgb(200, 0, 0), // Brighter Red
         };
 
         let version = env!("CARGO_PKG_VERSION");
-        let title_str = format!(
-            "Stormin Attack Dashboard v{} {} | Proxies: {} [P:Pause R:Resume Q:Quit]",
+        let elapsed_time_secs = stats.start_time.elapsed().as_secs();
+        let elapsed_str = format!(
+            "{:02}:{:02}:{:02}",
+            elapsed_time_secs / 3600,
+            (elapsed_time_secs % 3600) / 60,
+            elapsed_time_secs % 60
+        );
+        let main_title_str = format!(
+            "Stormin Dashboard v{} {} | Elapsed: {} | Proxies: {}",
             version,
             match stats.running_state {
                 RunningState::Running => "[Running]",
                 RunningState::Paused => "[Paused]",
                 RunningState::Stopping => "[Stopping]",
             },
+            elapsed_str,
             stats.proxy_count
         );
 
-        let title_widget = Paragraph::new(Text::styled(
-            title_str,
+        let title_paragraph = Paragraph::new(Text::styled(
+            main_title_str,
             Style::default()
                 .fg(status_color)
                 .add_modifier(Modifier::BOLD),
         ))
         .block(
             Block::default()
-                .borders(Borders::ALL)
+                .borders(Borders::LEFT | Borders::TOP | Borders::BOTTOM) // Adjusted borders
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .border_style(Style::default().fg(Color::Rgb(100, 100, 100))), // Modern gray
         );
-        f.render_widget(title_widget, chunks[0]);
+        f.render_widget(title_paragraph, title_chunks[0]);
+
+        // Buttons Area
+        let button_area = title_chunks[1];
+        let button_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(9), // Pause button
+                Constraint::Length(9), // Resume button
+                Constraint::Length(9), // Quit button
+            ])
+            .margin(0) // No margin for buttons within their area
+            .split(button_area);
+
+        layout_rects.pause_btn = button_chunks[0];
+        layout_rects.resume_btn = button_chunks[1];
+        layout_rects.quit_btn = button_chunks[2];
+
+        // Base block (no background color)
+        let base_button_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded);
+
+        // Pause Button
+        let pause_text = if stats.running_state == RunningState::Running {
+            "[P]ause"
+        } else {
+            "Pause"
+        };
+        let pause_text_color = if stats.running_state == RunningState::Running {
+            Color::Rgb(0, 180, 255) // Light blue when running
+        } else {
+            Color::White
+        };
+        let pause_border_color = if stats.running_state == RunningState::Running {
+            Color::Rgb(0, 180, 255)
+        } else {
+            Color::Gray
+        };
+        let pause_button = Paragraph::new(pause_text)
+            .style(Style::default().fg(pause_text_color)) // Only set text color
+            .block(
+                base_button_block
+                    .clone()
+                    .border_style(Style::default().fg(pause_border_color)),
+            )
+            .alignment(Alignment::Center);
+        f.render_widget(pause_button, layout_rects.pause_btn);
+
+        // Resume Button
+        let resume_text = if stats.running_state == RunningState::Paused {
+            "[R]esume"
+        } else {
+            "Resume"
+        };
+        let resume_text_color = if stats.running_state == RunningState::Paused {
+            Color::Yellow
+        } else {
+            Color::White
+        };
+        let resume_border_color = if stats.running_state == RunningState::Paused {
+            Color::Yellow
+        } else {
+            Color::Gray
+        };
+        let resume_button = Paragraph::new(resume_text)
+            .style(Style::default().fg(resume_text_color))
+            .block(
+                base_button_block
+                    .clone()
+                    .border_style(Style::default().fg(resume_border_color)),
+            )
+            .alignment(Alignment::Center);
+        f.render_widget(resume_button, layout_rects.resume_btn);
+
+        // Quit Button (always red)
+        let quit_text_color = Color::Red;
+        let quit_border_color = Color::Red;
+        let quit_button = Paragraph::new("[Q]uit")
+            .style(Style::default().fg(quit_text_color))
+            .block(
+                base_button_block
+                    .clone()
+                    .border_style(Style::default().fg(quit_border_color)),
+            )
+            .alignment(Alignment::Center);
+        f.render_widget(quit_button, layout_rects.quit_btn);
 
         // 系统状态 - 添加CPU和内存使用率图表
         let sys_info_block = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(chunks[1]);
+            .split(chunks[1]); // Restored index to 1
 
         // CPU使用率图表
         let cpu_ratio = (stats.cpu_usage as f64 / 100.0).clamp(0.0, 1.0);
@@ -234,7 +378,7 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
                 Constraint::Percentage(33),
                 Constraint::Percentage(33),
             ])
-            .split(chunks[2]);
+            .split(chunks[2]); // Restored index to 2
 
         // 添加请求速率统计
         let req_per_sec = if stats.start_time.elapsed().as_secs() > 0 {
@@ -254,7 +398,12 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
         ])])
         .block(
             Block::default()
-                .title(Span::styled("Total", Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD))) // Consistent title
+                .title(Span::styled(
+                    "Total",
+                    Style::default()
+                        .fg(Color::LightCyan)
+                        .add_modifier(Modifier::BOLD),
+                ))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::DarkGray)),
@@ -281,7 +430,12 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
         ])])
         .block(
             Block::default()
-                .title(Span::styled("Success", Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD))) // Consistent title
+                .title(Span::styled(
+                    "Success",
+                    Style::default()
+                        .fg(Color::LightGreen)
+                        .add_modifier(Modifier::BOLD),
+                )) // Consistent title
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::DarkGray)),
@@ -308,7 +462,12 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
         ])])
         .block(
             Block::default()
-                .title(Span::styled("Failure", Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD))) // Consistent title
+                .title(Span::styled(
+                    "Failure",
+                    Style::default()
+                        .fg(Color::LightRed)
+                        .add_modifier(Modifier::BOLD),
+                )) // Consistent title
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::DarkGray)),
@@ -318,42 +477,164 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
         f.render_widget(success, counters[1]);
         f.render_widget(failure, counters[2]);
 
-        // 请求统计图表 - Corrected data structure for BarChart
-        let target_names_for_chart: Vec<String> = stats
-            .targets
-            .iter()
-            .map(|t| t.url.split('/').last().unwrap_or(&t.url).to_string())
-            .collect();
+        // Sparkline 图表区域
+        let sparkline_area = chunks[3]; // Restored index to 3
+        let sparkline_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(33), // Total RPS
+                Constraint::Percentage(33), // Successful RPS
+                Constraint::Percentage(34), // Success Rate
+            ])
+            .split(sparkline_area);
 
-        // Create the data tuples using references to the owned Strings
-        let chart_data_tuples: Vec<(&str, u64)> = target_names_for_chart
-            .iter()
-            .zip(stats.targets.iter())
-            .map(|(name, t)| (name.as_str(), t.success + t.failure))
-            .collect();
-
-        let barchart = BarChart::default()
+        // Total RPS Sparkline
+        let rps_data_for_sparkline: Vec<u64> = stats.rps_history.iter().cloned().collect();
+        let rps_sparkline = Sparkline::default()
             .block(
                 Block::default()
                     .title(Span::styled(
-                        "Requests by Target",
-                        Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
+                        "Total RPS Trend", // Clarified title
+                        Style::default()
+                            .fg(Color::LightCyan)
+                            .add_modifier(Modifier::BOLD),
                     ))
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::DarkGray)),
             )
-            .data(chart_data_tuples.as_slice()) // Correctly use Vec<(&str, u64)>
-            .bar_width(6)
-            .bar_gap(1)
-            .bar_style(Style::default().fg(Color::LightYellow)) // Single color for all bars
-            .value_style(
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
+            .data(&rps_data_for_sparkline)
+            .style(Style::default().fg(Color::LightYellow));
+        f.render_widget(rps_sparkline, sparkline_chunks[0]);
+
+        // Successful RPS Sparkline
+        let successful_rps_data: Vec<u64> = stats
+            .successful_requests_per_second_history
+            .iter()
+            .cloned()
+            .collect();
+        let successful_rps_sparkline = Sparkline::default()
+            .block(
+                Block::default()
+                    .title(Span::styled(
+                        "Success RPS Trend",
+                        Style::default()
+                            .fg(Color::LightCyan)
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray)),
             )
-            .label_style(Style::default().fg(Color::DarkGray));
-        f.render_widget(barchart, chunks[3]);
+            .data(&successful_rps_data)
+            .style(Style::default().fg(Color::LightGreen)); // Different color
+        f.render_widget(successful_rps_sparkline, sparkline_chunks[1]);
+
+        // Success Rate Sparkline
+        let success_rate_data_for_sparkline: Vec<u64> =
+            stats.success_rate_history.iter().cloned().collect();
+        let success_rate_sparkline = Sparkline::default()
+            .block(
+                Block::default()
+                    .title(Span::styled(
+                        "Success Rate Trend (%)",
+                        Style::default()
+                            .fg(Color::LightCyan)
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            )
+            .data(&success_rate_data_for_sparkline)
+            .style(Style::default().fg(Color::Cyan)); // Different color
+        f.render_widget(success_rate_sparkline, sparkline_chunks[2]);
+
+        // 请求统计图表 - Replaced BarChart with custom horizontal stacked bars
+        let chart_area = chunks[4];
+        let mut lines: Vec<Line> = Vec::new();
+        let max_bar_width = chart_area.width.saturating_sub(30); // Reserve space for name and counts
+
+        if !stats.targets.is_empty() && max_bar_width > 10 {
+            // Find the max total requests for scaling, or use a reasonable default if all are 0
+            let max_total_req: u64 = stats
+                .targets
+                .iter()
+                .map(|t| t.success + t.failure)
+                .max()
+                .unwrap_or(1) // Avoid division by zero, ensure at least 1 for scaling
+                .max(1); // Ensure it's at least 1
+
+            for target_stat in &stats.targets {
+                let target_name = target_stat.url.split('/').last().unwrap_or(&target_stat.url);
+                // let total_req = target_stat.success + target_stat.failure;
+
+                let success_bar_len = if max_total_req > 0 {
+                    (target_stat.success as f64 / max_total_req as f64 * max_bar_width as f64) as u16
+                } else {
+                    0
+                };
+                let failure_bar_len = if max_total_req > 0 {
+                    (target_stat.failure as f64 / max_total_req as f64 * max_bar_width as f64) as u16
+                } else {
+                    0
+                };
+                
+                // Ensure total bar length doesn't exceed max_bar_width due to rounding
+                let current_total_bar = success_bar_len + failure_bar_len;
+                let (s_len, f_len) = if current_total_bar > max_bar_width {
+                    // Proportional scaling if exceeds (should be rare with f64 math but good to have)
+                    let scale_factor = max_bar_width as f64 / current_total_bar as f64;
+                    (
+                        (success_bar_len as f64 * scale_factor) as u16,
+                        (failure_bar_len as f64 * scale_factor) as u16,
+                    )
+                } else {
+                    (success_bar_len, failure_bar_len)
+                };
+
+
+                let line_spans = vec![
+                    Span::styled(
+                        format!("{:<15.15}: ", target_name), // Truncate/pad name
+                        Style::default().fg(Color::White),
+                    ),
+                    Span::styled(
+                        "▒".repeat(s_len as usize),
+                        Style::default().fg(Color::Green),
+                    ),
+                    Span::styled(
+                        "▒".repeat(f_len as usize),
+                        Style::default().fg(Color::Red),
+                    ),
+                    Span::raw(format!(
+                        " (S:{} F:{})",
+                        target_stat.success, target_stat.failure
+                    )),
+                ];
+                lines.push(Line::from(line_spans));
+            }
+        } else if stats.targets.is_empty() {
+            lines.push(Line::from("No targets to display stats for."));
+        } else {
+            lines.push(Line::from("Not enough space for target stats bars."));
+        }
+
+        let requests_by_target_widget = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .title(Span::styled(
+                        "Requests by Target (Success/Failure)",
+                        Style::default()
+                            .fg(Color::LightCyan)
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            )
+            .wrap(Wrap { trim: true });
+        f.render_widget(requests_by_target_widget, chart_area);
 
         // 成功率进度条
         let success_rate = if stats.total > 0 {
@@ -381,62 +662,103 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
             )
             .gauge_style(Style::default().fg(rate_color))
             .percent(success_rate);
-        f.render_widget(gauge, chunks[4]);
+        f.render_widget(gauge, chunks[5]); // Restored index to 5
 
-        // 线程状态 - Table
-        let thread_header_cells = ["Thread ID", "Requests", "Last Active"].iter().map(|h| {
-            Cell::from(*h).style(
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )
-        });
-        let thread_header = Row::new(thread_header_cells)
-            .style(Style::default().bg(Color::DarkGray)) // Header background
-            .height(1);
+        // 线程状态 - Table (Single, unified view)
+        let thread_area_chunk = chunks[6]; // Restored index to 6
+        layout_rects.threads = thread_area_chunk; // Assign to the unified 'threads' rect
 
-        let thread_rows: Vec<Row> = stats
-            .threads
-            .iter()
-            .map(|t| {
-                let last_active_secs = t.last_active.elapsed().as_secs_f64();
-                let activity_color = if last_active_secs < 1.0 {
-                    Color::LightGreen
-                } else if last_active_secs < 5.0 {
-                    Color::LightYellow
-                } else {
-                    Color::LightRed
-                };
-                Row::new(vec![
-                    Cell::from(format!("{:?}", t.id)),
-                    Cell::from(t.requests.to_string()).style(Style::default().fg(Color::Cyan)),
-                    Cell::from(format!("{:.1}s ago", last_active_secs))
-                        .style(Style::default().fg(activity_color)),
-                ])
-            })
-            .collect();
+        let available_width = layout_rects.threads.width.saturating_sub(2); // Subtract borders
 
-        let thread_rows_iter: Vec<Row> = thread_rows; // Ensure type is explicit for Table::new
-        let thread_table = Table::new(thread_rows_iter)
-            .widths(&[
-                Constraint::Percentage(40), // Thread ID
-                Constraint::Percentage(30), // Requests
-                Constraint::Percentage(30), // Last Active
-            ])
-            .header(thread_header)
+        // Define fixed widths for each part of the thread info for alignment
+        const TID_PREFIX_WIDTH: usize = 4; // "TID:"
+        const TID_VALUE_WIDTH: usize = 15; // Max width for ThreadId display (e.g., "ThreadId(XX)")
+        const REQ_PREFIX_WIDTH: usize = 2; // "R:"
+        const REQ_VALUE_WIDTH: usize = 6;  // Max width for requests (e.g., "999999")
+        const ACT_PREFIX_WIDTH: usize = 2; // "A:"
+        const ACT_VALUE_WIDTH: usize = 6;  // Max width for active time (e.g., "123.4s")
+        const ITEM_SPACING: u16 = 2; // Number of spaces between items
+
+        // Calculate total width for one formatted item
+        const ITEM_FIXED_WIDTH: u16 = (TID_PREFIX_WIDTH
+            + TID_VALUE_WIDTH
+            + REQ_PREFIX_WIDTH
+            + REQ_VALUE_WIDTH
+            + ACT_PREFIX_WIDTH
+            + ACT_VALUE_WIDTH) as u16;
+
+        let items_per_line = if available_width > ITEM_FIXED_WIDTH {
+            (available_width + ITEM_SPACING) / (ITEM_FIXED_WIDTH + ITEM_SPACING)
+        } else {
+            1
+        }
+        .max(1) as usize;
+
+        let mut lines: Vec<Line> = Vec::new();
+        if !stats.threads.is_empty() {
+            for thread_chunk in stats.threads.chunks(items_per_line) {
+                let mut line_spans: Vec<Span> = Vec::new();
+                for (idx, thread_stat) in thread_chunk.iter().enumerate() {
+                    let last_active_secs = thread_stat.last_active.elapsed().as_secs_f64();
+                    let activity_color = if last_active_secs < 1.0 {
+                        Color::LightGreen
+                    } else if last_active_secs < 5.0 {
+                        Color::LightYellow
+                    } else {
+                        Color::LightRed
+                    };
+
+                    // Format ThreadId: Left-align, truncate if necessary
+                    let tid_str = format!("{:?}", thread_stat.id);
+                    let tid_display = if tid_str.len() > TID_VALUE_WIDTH {
+                        &tid_str[..TID_VALUE_WIDTH]
+                    } else {
+                        &tid_str
+                    };
+
+                    let label_style = Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD);
+
+                    line_spans.push(Span::styled(format!("{:<TID_PREFIX_WIDTH$}", "TID:"), label_style));
+                    line_spans.push(Span::raw(format!("{:<TID_VALUE_WIDTH$}", tid_display))); // Keep value style default or specific
+
+                    line_spans.push(Span::styled(format!("{:<REQ_PREFIX_WIDTH$}", "R:"), label_style));
+                    line_spans.push(Span::styled(
+                        format!("{:<REQ_VALUE_WIDTH$}", thread_stat.requests),
+                        Style::default().fg(Color::Cyan), // Keep original value style
+                    ));
+
+                    line_spans.push(Span::styled(format!("{:<ACT_PREFIX_WIDTH$}", "A:"), label_style));
+                    line_spans.push(Span::styled(
+                        format!("{:<ACT_VALUE_WIDTH$.1}s", last_active_secs),
+                        Style::default().fg(activity_color), // Keep original value style
+                    ));
+
+                    if idx < thread_chunk.len() - 1 {
+                        line_spans.push(Span::raw(" ".repeat(ITEM_SPACING as usize)));
+                    }
+                }
+                lines.push(Line::from(line_spans));
+            }
+        } else {
+            lines.push(Line::from(Span::styled("No active threads.", Style::default().fg(Color::DarkGray))));
+        }
+
+        let thread_paragraph = Paragraph::new(lines)
             .block(
                 Block::default()
                     .title(Span::styled(
                         format!("Thread Activity ({})", stats.threads.len()),
-                        Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD), // Consistent title
+                        Style::default()
+                            .fg(Color::LightCyan)
+                            .add_modifier(Modifier::BOLD),
                     ))
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::DarkGray)),
             )
-            .highlight_style(Style::default().fg(Color::Black).bg(Color::LightCyan)) // More visible highlight
-            .highlight_symbol("▶ "); // Different highlight symbol
-        f.render_widget(thread_table, chunks[5]);
+            .wrap(Wrap { trim: true }); // Trim lines if they exceed paragraph width
+
+        f.render_widget(thread_paragraph, layout_rects.threads);
 
         // Target状态 - Table
         let target_header_cells = ["URL", "S/F", "Rate", "RPS", "Last OK", "Last Fail", "Error"]
@@ -489,23 +811,33 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
                 let error_msg_str = t.last_network_error.as_deref().unwrap_or("-").to_string();
 
                 Row::new(vec![
-                    Cell::from(t.url.clone()).style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)), // Bold URL
+                    Cell::from(t.url.clone()).style(
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ), // Bold URL
                     Cell::from(format!("{}/{}", t.success, t.failure)).style(Style::default().fg(
-                        if t.success > t.failure { Color::LightGreen } else { Color::LightRed }
+                        if t.success > t.failure {
+                            Color::LightGreen
+                        } else {
+                            Color::LightRed
+                        },
                     )),
-                    Cell::from(format!("{:.1}%", success_rate)).style(Style::default().fg(target_rate_color)),
-                    Cell::from(format!("{:.0}", rps_val)).style(Style::default().fg(Color::LightYellow)),
+                    Cell::from(format!("{:.1}%", success_rate))
+                        .style(Style::default().fg(target_rate_color)),
+                    Cell::from(format!("{:.0}", rps_val))
+                        .style(Style::default().fg(Color::LightYellow)),
                     Cell::from(last_success_str).style(Style::default().fg(Color::Green)), // Ensured DarkGreen is replaced
-                    Cell::from(last_failure_str).style(Style::default().fg(Color::Red)),     // Ensured DarkRed is replaced
+                    Cell::from(last_failure_str).style(Style::default().fg(Color::Red)), // Ensured DarkRed is replaced
                     Cell::from(error_msg_str).style(Style::default().fg(Color::Red)),
                 ])
             })
             .collect();
 
         let target_rows_iter: Vec<Row> = target_rows; // Ensure type is explicit for Table::new
-        let target_table = Table::new(target_rows_iter)
+        let target_table_widget = Table::new(target_rows_iter)
             .widths(&[
-                Constraint::Min(20),        // URL (Min width, can expand)
+                Constraint::Percentage(28),        // URL (Min width, can expand)
                 Constraint::Length(8),      // S/F
                 Constraint::Length(8),      // Rate
                 Constraint::Length(7),      // RPS
@@ -518,15 +850,30 @@ pub fn draw_ui<B: Backend>(terminal: &mut Terminal<B>, stats: &Stats) -> std::io
                 Block::default()
                     .title(Span::styled(
                         format!("Target Details ({})", stats.targets.len()),
-                        Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD), // Consistent title
+                        Style::default()
+                            .fg(Color::LightMagenta)
+                            .add_modifier(Modifier::BOLD),
                     ))
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(Color::DarkGray)),
-            )
-            .highlight_style(Style::default().fg(Color::Black).bg(Color::LightCyan)) // Consistent highlight
-            .highlight_symbol("▶ ");
-        f.render_widget(target_table, chunks[6]);
+                    .border_style(if focused == FocusedWidget::TargetTable {
+                        Style::default().fg(Color::Yellow)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    }),
+            );
+        // .highlight_style(Style::default().fg(Color::Black).bg(Color::LightYellow).add_modifier(Modifier::BOLD))) // Removed highlight
+        // .highlight_symbol("▶ "); // Removed highlight symbol
+
+        let mut target_table_state = TableState::default();
+        *target_table_state.offset_mut() = stats.target_table_offset;
+        layout_rects.targets = chunks[7]; // Restored index to 7
+        f.render_stateful_widget(
+            target_table_widget,
+            layout_rects.targets,
+            &mut target_table_state,
+        );
     })?;
-    Ok(())
+
+    Ok(layout_rects)
 }

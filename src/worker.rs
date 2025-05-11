@@ -120,12 +120,7 @@ pub async fn worker_loop(
                     ));
                     return;
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    logger.warning(&format!(
-                        "Worker {:?} lagged by {} messages while paused.",
-                        thread_id, n
-                    ));
-                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
             }
             sleep(loop_sleep_duration).await;
         }
@@ -155,7 +150,7 @@ pub async fn worker_loop(
                         };
 
                         let mut req = client.request(target.method.clone(), &target.url);
-                        
+
                         buffer.clear();
                         // Create a fresh context for each request task (params and headers can share)
                         let mut context = HashMap::new();
@@ -166,10 +161,14 @@ pub async fn worker_loop(
                                 Ok(value_string) => {
                                     match reqwest::header::HeaderName::from_bytes(key.as_bytes()) {
                                         Ok(header_name) => {
-                                            match reqwest::header::HeaderValue::from_str(&value_string) {
+                                            match reqwest::header::HeaderValue::from_str(
+                                                &value_string,
+                                            ) {
                                                 Ok(header_value) => {
                                                     req = req.header(header_name, header_value);
-                                                    buffer.headers_vec.push((key.clone(), value_string)); // Store for debugging
+                                                    buffer
+                                                        .headers_vec
+                                                        .push((key.clone(), value_string)); // Store for debugging
                                                 }
                                                 Err(e) => {
                                                     logger.warning(&format!(
@@ -249,8 +248,8 @@ pub async fn worker_loop(
                             }
                         };
 
-                        let debug_message = format!(
-                            "[Request Debug]\nURL: {}\nMethod: {}\nDuration: {:?}\nStatus: {}{}{}{}",
+                        let attack_message = format!(
+                            "[Request]\nURL: {}\nMethod: {}\nDuration: {:?}\nStatus: {}{}{}{}",
                             target.url,
                             target.method,
                             duration,
@@ -281,9 +280,12 @@ pub async fn worker_loop(
                             } else {
                                 String::new()
                             },
-                            error_details.as_ref().map(|err| format!("\nError: {}", err)).unwrap_or_default()
+                            error_details
+                                .as_ref()
+                                .map(|err| format!("\nError: {}", err))
+                                .unwrap_or_default()
                         );
-                        logger.debug(&debug_message); // Log detailed debug info regardless of success
+                        logger.info(&attack_message); // Log detailed debug info regardless of success
 
                         // 发送统计信息到UI
                         let update = TargetUpdate {
@@ -292,7 +294,7 @@ pub async fn worker_loop(
                             success,
                             timestamp,
                             // Pass the detailed debug message to the stats channel
-                            debug: Some(debug_message),
+                            debug: Some(attack_message),
                             // Populate network_error only if the request failed before getting a status
                             network_error: error_details, // error_details is Some(String) only on Err(e)
                             thread_id,                    // Include thread_id

@@ -21,6 +21,7 @@ ${<函数名|变量名>[(:<定义名>)][:<参数1>[,<参数2>,…]]}
 - `:<参数列表>`：可选，多参数用逗号 `,` 分隔
 - 如果函数不需要参数，可写成 `${fn}` 或 `${fn:}`
 - 变量使用示例
+
   ```toml
   params = { "password" = "${password(:pass)}", "nextpassword" = "${pass}" }
   ```
@@ -80,7 +81,7 @@ ${<函数名|变量名>[(:<定义名>)][:<参数1>[,<参数2>,…]]}
 | `lower`             | `string`                 | 转小写                 | `${lower:"HELLO"}` → `hello`                      |
 | `replace`           | `str`, `old`, `new`      | 全部替换               | `${replace:"a.b.c",".","-"}` → `a-b-c`            |
 | `substr`            | `str`, `start`\[, `len`] | 取子串                 | `${substr:"abcdef",1,3}` → `bcd`                  |
-| `random`            | `type`, …                | 生成随机值             | `${random:chars,8}` <br> `${random:number,1,100}` |
+| `random`            | `type`, …                | 生成随机值             | `${random:chars,8}` `${random:number,1,100}`      |
 | `choose_random`     | `arg1`[, `arg2`, ...]    | 从参数中随机选一个     | `${choose_random:"a","b","c"}`                    |
 
 ---

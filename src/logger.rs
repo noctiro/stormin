@@ -5,7 +5,6 @@ use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LogLevel {
-    Debug,
     Info,
     Warning,
     Error,
@@ -14,7 +13,6 @@ pub enum LogLevel {
 impl LogLevel {
     pub fn as_str(&self) -> &'static str {
         match self {
-            LogLevel::Debug => "DEBUG",
             LogLevel::Info => "INFO",
             LogLevel::Warning => "WARN",
             LogLevel::Error => "ERROR",
@@ -35,10 +33,6 @@ impl Logger {
     pub fn log(&self, level: LogLevel, message: &str) {
         let formatted_message = format!("[{}] {}", level.as_str(), message);
         self.send_log(formatted_message);
-    }
-
-    pub fn debug(&self, message: &str) {
-        self.log(LogLevel::Debug, message);
     }
 
     pub fn info(&self, message: &str) {
