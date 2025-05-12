@@ -313,7 +313,12 @@ pub fn draw_ui<B: Backend>(
             .split(chunks[1]); // Restored index to 1
 
         // CPU使用率图表
-        let cpu_ratio = (stats.cpu_usage as f64 / 100.0).clamp(0.0, 1.0);
+        let cpu_usage_f64 = stats.cpu_usage as f64;
+        let cpu_ratio = if cpu_usage_f64.is_nan() {
+            0.0 // Default to 0.0 if cpu_usage is NaN
+        } else {
+            (cpu_usage_f64 / 100.0).clamp(0.0, 1.0)
+        };
         let cpu_gauge = LineGauge::default()
             .block(
                 Block::default()
@@ -335,10 +340,10 @@ pub fn draw_ui<B: Backend>(
         // 内存使用率图表
         let total_mem = stats.sys.total_memory() as f64;
         let used_mem = stats.memory_usage as f64;
-        let memory_ratio = if total_mem > 0.0 {
-            (used_mem / total_mem).clamp(0.0, 1.0)
-        } else {
-            0.0
+        let memory_ratio = match (total_mem, used_mem) {
+            (t, _) if t <= 0.0 => 0.0, // 防止除零
+            (t, u) if u.is_nan() || t.is_nan() => 0.0, // 处理NaN
+            (t, u) => (u / t).clamp(0.0, 1.0)
         };
         let memory_gauge = LineGauge::default()
             .block(
@@ -369,8 +374,9 @@ pub fn draw_ui<B: Backend>(
             .split(chunks[2]); // Restored index to 2
 
         // 添加请求速率统计
-        let req_per_sec = if stats.start_time.elapsed().as_secs() > 0 {
-            stats.total as f64 / stats.start_time.elapsed().as_secs() as f64
+        let elapsed_secs = stats.start_time.elapsed().as_secs() as f64;
+        let req_per_sec = if elapsed_secs > 0.0 && stats.total > 0 {
+            (stats.total as f64 / elapsed_secs).max(0.0) // 确保非负
         } else {
             0.0
         };
@@ -624,7 +630,8 @@ pub fn draw_ui<B: Backend>(
 
         // 成功率进度条
         let success_rate = if stats.total > 0 {
-            (stats.success as f64 / stats.total as f64 * 100.0) as u16
+            let rate = (stats.success as f64 / stats.total as f64 * 100.0).clamp(0.0, 100.0);
+            rate as u16
         } else {
             0
         };
