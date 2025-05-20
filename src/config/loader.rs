@@ -34,6 +34,7 @@ pub struct RawConfig {
     pub proxy_file: Option<String>,
     pub threads: Option<usize>,
     pub timeout: Option<u64>,
+    pub generator_threads: Option<usize>, // 数据生成器线程数
     // 新增的动态速率配置项
     pub target_rps: Option<f64>,
     pub min_success_rate: Option<f64>,            // 0.0 to 1.0
@@ -151,11 +152,14 @@ pub struct AttackConfig {
     pub timeout: u64,
     pub targets: Vec<CompiledTarget>,
     pub proxies: Vec<ProxyConfig>,
-    pub target_rps: Option<f64>,
-    pub min_success_rate: Option<f64>,
-    pub rps_adjust_factor: Option<f64>,
-    pub success_rate_penalty_factor: Option<f64>,
-    // New fields
+    pub generator_threads: Option<usize>,
+    // 数据生成器默认配置
+    pub min_delay_micros: u64,     // 最小延迟 (微秒)
+    pub max_delay_micros: u64,     // 最大延迟 (微秒)
+    pub initial_delay_micros: u64, // 初始延迟 (微秒)
+    pub increase_factor: f64,      // 延迟增加因子
+    pub decrease_factor: f64,      // 延迟减少因子
+    // 运行控制配置
     pub cli_update_interval_secs: Option<u64>,
     pub start_paused: Option<bool>,
     pub run_duration: Option<Duration>, // Parsed from string
@@ -253,9 +257,7 @@ fn build_ast_from_pair(
             Ok(TemplateAstNode::TemplateString(children))
         }
 
-        Rule::template_string_literal => {
-            Ok(TemplateAstNode::Static(pair.as_str().to_string()))
-        }
+        Rule::template_string_literal => Ok(TemplateAstNode::Static(pair.as_str().to_string())),
 
         _ => unreachable!(
             "Unexpected rule: {:?} in build_ast_from_pair",
@@ -281,17 +283,21 @@ fn parse_duration_str(duration_str: &str) -> Result<Duration, ConfigError> {
             current_num_str.push(ch);
         } else {
             if current_num_str.is_empty() && !"smh".contains(ch) {
-                 return Err(ConfigError::InvalidDurationFormat(format!(
+                return Err(ConfigError::InvalidDurationFormat(format!(
                     "Invalid character in duration string: {}",
                     ch
                 )));
             }
-            let num = if current_num_str.is_empty() { 1 } else { current_num_str.parse::<u64>().map_err(|_| {
-                ConfigError::InvalidDurationFormat(format!(
-                    "Invalid number in duration string: {}",
-                    current_num_str
-                ))
-            })?};
+            let num = if current_num_str.is_empty() {
+                1
+            } else {
+                current_num_str.parse::<u64>().map_err(|_| {
+                    ConfigError::InvalidDurationFormat(format!(
+                        "Invalid number in duration string: {}",
+                        current_num_str
+                    ))
+                })?
+            };
             current_num_str.clear();
 
             match ch {
@@ -302,13 +308,13 @@ fn parse_duration_str(duration_str: &str) -> Result<Duration, ConfigError> {
                     return Err(ConfigError::InvalidDurationFormat(format!(
                         "Invalid unit in duration string: {}",
                         ch
-                    )))
+                    )));
                 }
             }
         }
     }
     if !current_num_str.is_empty() {
-         let num = current_num_str.parse::<u64>().map_err(|_| {
+        let num = current_num_str.parse::<u64>().map_err(|_| {
             ConfigError::InvalidDurationFormat(format!(
                 "Invalid trailing number in duration string: {}",
                 current_num_str
@@ -374,7 +380,7 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
         std::thread::available_parallelism()
             .unwrap_or(NonZeroUsize::new(1).unwrap())
             .get()
-            * 4
+            * 16
     };
 
     let timeout = if let Some(t) = raw.timeout {
@@ -515,11 +521,6 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
         return Err(ConfigError::NoTargets.into());
     }
 
-    let target_rps = raw.target_rps;
-    let min_success_rate = raw.min_success_rate.map(|val| val.clamp(0.0, 1.0));
-    let rps_adjust_factor = raw.rps_adjust_factor.map(|val| val.max(0.0));
-    let success_rate_penalty_factor = raw.success_rate_penalty_factor.map(|val| val.max(1.0));
-
     let cli_update_interval_secs = raw.cli_update_interval_secs;
     let start_paused = raw.start_paused;
 
@@ -531,15 +532,28 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
         None => None,
     };
 
+    // 计算数据生成器线程数，默认是 threads/512，最小为 1
+    let generator_threads = match raw.generator_threads {
+        Some(g) => {
+            if g < 1 {
+                return Err(ConfigError::InvalidGeneratorThreadCount.into());
+            }
+            Some(g)
+        }
+        None => Some((threads / 512).max(1)),
+    };
+
     Ok(AttackConfig {
         threads,
         timeout,
         targets: compiled,
         proxies,
-        target_rps,
-        min_success_rate,
-        rps_adjust_factor,
-        success_rate_penalty_factor,
+        generator_threads,
+        min_delay_micros: 1000,     // 1ms最小延迟
+        max_delay_micros: 100_000,  // 100ms最大延迟
+        initial_delay_micros: 5000, // 5ms初始延迟
+        increase_factor: 1.2,       // 20%增长
+        decrease_factor: 0.85,      // 15%减少
         cli_update_interval_secs,
         start_paused,
         run_duration,

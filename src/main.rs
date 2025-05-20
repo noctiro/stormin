@@ -33,13 +33,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             return Err(e);
         }
-    };
-
-    // Spawn background threads
+    };    // Spawn background threads
     if !cli_mode {
         app.spawn_log_receiver(); // Log receiver is TUI specific
     }
-    app.spawn_workers(); // Workers are common for both modes
+    app.spawn_data_generators(); // First spawn data generators
+    app.spawn_workers(); // Then spawn workers
 
     // Run the main application loop async (App::run handles TUI/CLI internally)
     let run_result = app.run().await;

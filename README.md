@@ -17,15 +17,20 @@ Stormin 是一个拥有 TUI 界面的注册轰炸机，专门用于整治盗号�
 ### 基本结构
 
 ```toml
-threads = 16                       # 线程数 推荐 CPU 核数 * 4
+threads = 64                       # 线程数 推荐 CPU 核数 * 16 (可选)
+generator_threads = 1              # 生成线程数，一般1就够用 (可选)
 proxy_file = "proxies.txt"         # 代理文件路径（可选）
-timeout = 5                        # 超时时间，单位秒
+timeout = 5                        # 超时时间，单位秒 (可选)
+cli_update_interval_secs = 1       # CLI模式下的统计信息更新间隔（秒）（可选）
+start_paused = false               # 是否以暂停状态启动（可选，默认 false）
+run_duration = "30m"               # 运行持续时间（可选，如 "10s", "5m", "1h"）
 
-# 动态速率控制参数 (均为可选)
-# target_rps = 100.0                 # 目标每秒请求数 (RPS)。如果未设置，将使用内部的自适应延迟逻辑。
-# min_success_rate = 0.95            # 最小发送成功率 (0.0 到 1.0)。
-# rps_adjust_factor = 0.2            # RPS 调整因子 (若不设置，代码中默认为 0.2)。控制向 target_rps 调整的速度。
-# success_rate_penalty_factor = 1.5  # 成功率惩罚因子 (若不设置，代码中默认为 1.5)。低于 min_success_rate 时应用。
+# --- 数据生成速率配置 (所有参数可选) ---
+min_delay_micros = 1000          # 最小生成延迟，默认1000微秒(1ms)
+max_delay_micros = 100000        # 最大生成延迟，默认100000微秒(100ms)
+initial_delay_micros = 5000      # 初始生成延迟，默认5000微秒(5ms)
+increase_factor = 1.2            # 延迟增加因子，默认1.2(每次增加20%)
+decrease_factor = 0.85           # 延迟减少因子，默认0.85(每次减少15%)
 
 [[Target]]                  # 定义第一个目标
 url = "http://example.com"  # 目标URL
@@ -37,12 +42,21 @@ params = { }                # URL参数(可以使用模板语法)（可选）
 # ... 其他目标配置
 ```
 
-### 动态速率控制说明
+### 数据生成速率说明
 
-- `target_rps`: (可选) 设置数据生成器尝试达到的目标每秒请求数。如果未设置，将使用基本的自适应延迟。
-- `min_success_rate`: (可选) 设置一个介于 0.0 和 1.0 之间的值。如果数据发送的成功率（基于最近的发送尝试）低于此阈值，数据生成器将增加延迟以尝试提高成功率。
-- `rps_adjust_factor`: (可选, 默认为 0.2) 控制当设置了 `target_rps` 时，数据生成器向目标延迟调整的速度。较小的值调整较慢，较大的值调整较快。
-- `success_rate_penalty_factor`: (可选, 默认为 1.5) 当实际发送成功率低于 `min_success_rate` 时，当前的发送延迟会乘以这个因子。
+程序使用自适应的速率控制系统，通过动态调整生成延迟来平衡性能和资源使用：
+
+- `min_delay_micros`: 最小生成延迟（微秒）。默认1000微秒（1毫秒），防止生成过快消耗过多资源。
+- `max_delay_micros`: 最大生成延迟（微秒）。默认100000微秒（100毫秒），避免生成过慢影响性能。
+- `initial_delay_micros`: 初始生成延迟（微秒）。默认5000微秒（5毫秒），启动时的基准延迟。
+- `increase_factor`: 当数据池满时，延迟增加的系数。默认1.2，表示每次增加20%延迟。
+- `decrease_factor`: 当数据发送成功时，延迟减少的系数。默认0.85，表示每次减少15%延迟。
+
+### CLI 模式配置说明
+
+- `cli_update_interval_secs`: 在 CLI 模式下，统计信息的更新间隔时间（秒）。
+- `start_paused`: 是否以暂停状态启动程序。默认为 false，即程序启动后立即开始执行。
+- `run_duration`: 程序的运行时长。支持秒(s)、分钟(m)、小时(h)的组合，如 "30s"、"5m"、"1h30m"。不设置则持续运行直到手动停止。
 
 ### 参数模板语法
 
@@ -62,7 +76,7 @@ params = { sv = "${base64:${base64:${password}}}" }
 
 ### CLI 模式
 
-通过 `--cli` 参数启用，默认为TUI模式
+通过 `--cli` 参数启用，默认为 TUI 模式
 
 ## 免责声明
 

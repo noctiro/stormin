@@ -1,7 +1,7 @@
 use crate::config::loader::{self, load_config_and_compile};
-use crate::data_generator::DataGenerator;
-use crate::ui::event_handler::{AppAction, handle_event};
+use crate::data_generator;
 use crate::logger::Logger;
+use crate::ui::event_handler::{AppAction, handle_event};
 use crate::ui::stats_updater::StatsUpdater;
 use crate::ui::{DebugInfo, LayoutRects};
 use crate::ui::{RunningState, Stats, TargetStats, draw_ui};
@@ -12,16 +12,20 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
+use std::sync::mpsc as std_mpsc;
 use std::{
     collections::VecDeque,
     error::Error,
     io::{self, Stdout},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
-use std::sync::mpsc as std_mpsc;
 use sysinfo::System;
+use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::{broadcast, mpsc};
 use tokio::{task::JoinHandle, time::sleep};
 
@@ -29,18 +33,20 @@ pub struct App {
     config: loader::AttackConfig,
     pub stats: Stats,
     pub logger: Logger,
-    terminal: Option<Terminal<CrosstermBackend<Stdout>>>, // Optional for CLI mode
+    terminal: Option<Terminal<CrosstermBackend<Stdout>>>,
     pub control_tx: broadcast::Sender<WorkerMessage>,
-    data_tx: broadcast::Sender<PreGeneratedRequest>,
+    data_pool_tx: Option<mpsc::Sender<PreGeneratedRequest>>,
+    data_pool_rx: Option<Arc<TokioMutex<mpsc::Receiver<PreGeneratedRequest>>>>, // Use TokioMutex
     target_stats_tx: mpsc::Sender<TargetUpdate>,
     target_stats_rx: mpsc::Receiver<TargetUpdate>,
-    log_rx: Option<std_mpsc::Receiver<DebugInfo>>, // Only used in TUI mode
+    log_rx: Option<std_mpsc::Receiver<DebugInfo>>,
     worker_handles: Vec<JoinHandle<()>>,
-    pub data_generator: DataGenerator,
-    log_receiver_handle: Option<thread::JoinHandle<()>>, // Only used in TUI mode
-    pub layout_rects: LayoutRects, // Only used in TUI mode
+    pub data_generator_handles: Vec<JoinHandle<()>>,
+    pub data_generator_stop_signal: Arc<AtomicBool>,
+    log_receiver_handle: Option<thread::JoinHandle<()>>,
+    pub layout_rects: LayoutRects,
     stats_updater: StatsUpdater,
-    cli_mode: bool, // To indicate if running in CLI mode
+    cli_mode: bool,
 }
 
 impl App {
@@ -68,11 +74,8 @@ impl App {
         }
 
         let (control_tx, _) = broadcast::channel(128);
-        let (data_tx, _) = broadcast::channel(1024);
         let (target_stats_tx, target_stats_rx) = mpsc::channel(256);
-
-        let logger = Logger::new(log_tx_for_logger, cli_mode); // Ensure this line is exactly as expected
-        let data_generator = DataGenerator::new(config.clone(), data_tx.clone(), logger.clone());
+        let logger = Logger::new(log_tx_for_logger, cli_mode);
 
         let stats = Stats {
             targets: config
@@ -88,7 +91,7 @@ impl App {
                     last_network_error: None,
                 })
                 .collect(),
-            threads: Vec::new(),
+            threads: Vec::new(), // This might be unused now or could represent something else
             success: 0,
             failure: 0,
             total: 0,
@@ -100,29 +103,72 @@ impl App {
             memory_usage: 0,
             proxy_count: config.proxies.len(),
             running_state: RunningState::Running,
-            debug_logs: VecDeque::with_capacity(if cli_mode { 0 } else { 1000 }), // No debug logs stored in CLI
+            debug_logs: VecDeque::with_capacity(if cli_mode { 0 } else { 1000 }),
             rps_history: VecDeque::with_capacity(120),
             successful_requests_per_second_history: VecDeque::with_capacity(120),
             success_rate_history: VecDeque::with_capacity(120),
         };
 
         Ok(App {
+            // App::new's Ok block starts here
             config,
             stats,
             logger,
             terminal,
             control_tx,
-            data_tx,
+            data_pool_tx: None,
+            data_pool_rx: None,
             target_stats_tx,
             target_stats_rx,
             log_rx,
-            worker_handles: Vec::new(),
-            data_generator,
+            worker_handles: Vec::new(), // Correctly initialize worker_handles
+            data_generator_handles: Vec::new(),
+            data_generator_stop_signal: Arc::new(AtomicBool::new(false)),
             log_receiver_handle: None,
             layout_rects: LayoutRects::default(),
             stats_updater: StatsUpdater::new(),
             cli_mode,
-        })
+        }) // App::new's Ok block ends here
+    } // App::new method ends here
+
+    // spawn_data_generators is defined *after* App::new
+    pub fn spawn_data_generators(&mut self) {
+        let num_generators = self.config.generator_threads.unwrap_or(1).max(1);
+        self.logger.info(&format!(
+            "Spawning {} data generator tasks...",
+            num_generators
+        ));
+
+        let pool_size = self.config.threads * 50;
+        let (data_pool_tx, data_pool_rx) = mpsc::channel(pool_size);
+        self.data_pool_tx = Some(data_pool_tx);
+        self.data_pool_rx = Some(Arc::new(TokioMutex::new(data_pool_rx))); // Use TokioMutex
+
+        self.data_generator_stop_signal
+            .store(false, Ordering::SeqCst);
+
+        for i in 0..num_generators {
+            let cfg = self.config.clone();
+            let pool_tx_clone = self
+                .data_pool_tx
+                .as_ref()
+                .expect("Data pool sender should be initialized")
+                .clone();
+            let logger_clone = self.logger.clone();
+            let stop_signal_clone = self.data_generator_stop_signal.clone();
+
+            let handle = tokio::spawn(async move {
+                data_generator::data_generator_loop(
+                    i,
+                    cfg,
+                    pool_tx_clone,
+                    logger_clone,
+                    stop_signal_clone,
+                )
+                .await;
+            });
+            self.data_generator_handles.push(handle);
+        }
     }
 
     pub fn spawn_workers(&mut self) {
@@ -132,14 +178,17 @@ impl App {
         ));
         for _i in 0..self.config.threads {
             let control_rx = self.control_tx.subscribe();
-            let data_rx = self.data_tx.subscribe();
+            let data_pool_rx_clone = self
+                .data_pool_rx
+                .clone()
+                .expect("Data pool receiver should be initialized before spawning workers");
             let cfg = self.config.clone();
             let worker_logger = self.logger.clone();
             let stats_tx = self.target_stats_tx.clone();
             let handle = tokio::spawn(async move {
                 worker_loop(
                     control_rx,
-                    data_rx,
+                    data_pool_rx_clone,
                     cfg,
                     std::thread::current().id(),
                     worker_logger.clone(),
@@ -153,11 +202,15 @@ impl App {
 
     pub fn spawn_log_receiver(&mut self) {
         if self.cli_mode {
-            return; // Log receiver is not used in CLI mode
+            return;
         }
-        self.logger.info("Spawning log receiver thread (TUI mode)...");
-        let log_rx_taken = self.log_rx.take().expect("Log receiver already taken or not initialized for TUI");
-        let debug_logs_tx = self.target_stats_tx.clone(); // This sends to stats updater
+        self.logger
+            .info("Spawning log receiver thread (TUI mode)...");
+        let log_rx_taken = self
+            .log_rx
+            .take()
+            .expect("Log receiver already taken or not initialized for TUI");
+        let debug_logs_tx = self.target_stats_tx.clone();
         let logger_clone = self.logger.clone();
 
         let handle = thread::spawn(move || {
@@ -165,37 +218,29 @@ impl App {
             loop {
                 match log_rx_taken.try_recv() {
                     Ok(log_entry) => {
-                        // In TUI mode, DebugInfo is sent to Stats for display
                         let update = TargetUpdate {
-                            id: 0, // Special ID for app-level logs
+                            id: 0,
                             url: String::new(),
                             success: false,
-                            timestamp: log_entry.timestamp, // Assuming DebugInfo has Instant
+                            timestamp: log_entry.timestamp,
                             debug: Some(log_entry.message),
                             network_error: None,
-                            thread_id: std::thread::current().id(), // Not strictly necessary here
+                            thread_id: std::thread::current().id(),
                         };
                         if debug_logs_tx.blocking_send(update).is_err() {
-                            // If sending to the UI update channel fails,
-                            // it likely means the UI/main loop is shutting down.
-                            eprintln!("Log receiver: UI channel (debug_logs_tx) send failed, exiting log receiver loop.");
-                            break; // Exit the loop
+                            eprintln!(
+                                "Log receiver: UI channel (debug_logs_tx) send failed, exiting log receiver loop."
+                            );
+                            break;
                         }
                     }
                     Err(std_mpsc::TryRecvError::Empty) => {
-                        // The channel is empty. Sleep for a short duration to avoid busy-waiting.
-                        // The loop will continue to check for new messages.
-                        // We need to ensure this thread can be joined during shutdown.
-                        // If control_tx is used to signal shutdown, we might need to check it here too,
-                        // or rely on the sender disconnecting.
-                        // For now, simple sleep.
-                        thread::sleep(Duration::from_millis(50)); // Adjust sleep duration as needed
+                        thread::sleep(Duration::from_millis(50));
                     }
                     Err(std_mpsc::TryRecvError::Disconnected) => {
-                        // The sender (Logger's sender) has been disconnected.
-                        // This is the primary signal for this thread to terminate.
-                        logger_clone.info("Log receiver: Logger sender disconnected, exiting loop.");
-                        break; // Exit the loop
+                        logger_clone
+                            .info("Log receiver: Logger sender disconnected, exiting loop.");
+                        break;
                     }
                 }
             }
@@ -220,17 +265,24 @@ impl App {
         let r = running.clone();
         ctrlc::set_handler(move || {
             r.store(false, Ordering::SeqCst);
-            // Optionally, send a quit event or directly signal the app to stop
         })?;
-        
-        let terminal = self.terminal.as_mut().ok_or("Terminal not initialized for TUI mode")?;
+
+        let terminal = self
+            .terminal
+            .as_mut()
+            .ok_or("Terminal not initialized for TUI mode")?;
 
         match draw_ui(terminal, &self.stats) {
             Ok(all_rects) => self.update_layout_rects(all_rects),
             Err(e) => {
-                self.logger.error(&format!("Initial TUI draw failed: {}", e));
+                self.logger
+                    .error(&format!("Initial TUI draw failed: {}", e));
                 return Err(e.into());
             }
+        }
+
+        if !self.config.start_paused.unwrap_or(false) {
+            self.spawn_data_generators();
         }
 
         while running.load(Ordering::SeqCst) {
@@ -244,11 +296,7 @@ impl App {
                 match app_action {
                     AppAction::Quit => {
                         self.logger.info("Quit action received. Signaling workers to stop and exiting immediately.");
-                        // Attempt to signal workers to stop. This is a "best effort" before immediate exit.
                         let _ = self.control_tx.send(WorkerMessage::Stop);
-
-                        // Minimal terminal restoration before exiting.
-                        // This is to prevent messing up the user's terminal on abrupt exit.
                         if let Some(terminal) = self.terminal.as_mut() {
                             let _ = execute!(
                                 terminal.backend_mut(),
@@ -257,12 +305,12 @@ impl App {
                             );
                             let _ = terminal.show_cursor();
                         }
-                        let _ = disable_raw_mode(); // Attempt to disable raw mode.
-
-                        self.logger.info("Exiting application now via std::process::exit(0).");
-                        std::process::exit(0); // Exit the entire process immediately.
+                        let _ = disable_raw_mode();
+                        self.logger
+                            .info("Exiting application now via std::process::exit(0).");
+                        std::process::exit(0);
                     }
-                    _ => {} // Other actions are handled by modifying app.stats or sending messages
+                    _ => {}
                 }
             }
 
@@ -276,13 +324,14 @@ impl App {
                     needs_redraw = true;
                 }
             }
-            
-            // Manage data generator (common logic, could be a helper)
+
             self.manage_data_generator();
 
-
             if needs_redraw || last_draw_time.elapsed() >= redraw_interval {
-                 let terminal_mut = self.terminal.as_mut().ok_or("Terminal not available for TUI draw")?;
+                let terminal_mut = self
+                    .terminal
+                    .as_mut()
+                    .ok_or("Terminal not available for TUI draw")?;
                 match draw_ui(terminal_mut, &self.stats) {
                     Ok(all_rects) => {
                         self.update_layout_rects(all_rects);
@@ -304,21 +353,22 @@ impl App {
     }
 
     fn print_cli_stats(&self) {
-        // Simple CLI output, can be expanded
         println!(
             "{} ----- Stats ----- {}",
             chrono::Utc::now().to_rfc3339(),
             self.config.run_duration.map_or_else(
                 || "".to_string(),
-                |d| format!("(remaining: {:?})", d.saturating_sub(self.stats.start_time.elapsed()))
+                |d| format!(
+                    "(remaining: {:?})",
+                    d.saturating_sub(self.stats.start_time.elapsed())
+                )
             )
         );
         println!(
-            "Total: {}, Success: {}, Failure: {}, RPS: {}", // Changed {:.2} to {}
+            "Total: {}, Success: {}, Failure: {}, RPS: {}",
             self.stats.total,
             self.stats.success,
             self.stats.failure,
-            // Pass the u64 value directly, remove unnecessary dereference
             self.stats.rps_history.back().copied().unwrap_or(0u64)
         );
         for target_stat in &self.stats.targets {
@@ -329,16 +379,33 @@ impl App {
         }
         println!("--------------------");
     }
-    
+
     fn manage_data_generator(&mut self) {
+        let currently_stopped = self.data_generator_stop_signal.load(Ordering::SeqCst);
+
         if self.stats.running_state == RunningState::Running {
-            if !self.data_generator.is_running() && self.data_generator.is_finished() {
-                self.logger.info("Data generator seems to have stopped, attempting to restart.");
-                self.data_generator.spawn();
-            } else if !self.data_generator.is_running() && !self.data_generator.is_finished() {
-                 // If it's not running but not finished, it might be paused by user or config
-                self.data_generator.set_running_flag(true);
-                self.logger.info("Data generator was paused, attempting to resume it.");
+            if currently_stopped {
+                self.logger
+                    .info("Data generators were stopped, signaling them to resume.");
+                self.data_generator_stop_signal
+                    .store(false, Ordering::SeqCst);
+                if self.data_generator_handles.is_empty()
+                    && !self.config.start_paused.unwrap_or(false)
+                {
+                    self.logger.info("No active data generator handles found while trying to resume. Spawning new generators.");
+                    self.spawn_data_generators();
+                }
+            } else if self.data_generator_handles.is_empty()
+                && !self.config.start_paused.unwrap_or(false)
+            {
+                self.logger.info("No active data generator handles found and not explicitly stopped. Spawning new generators.");
+                self.spawn_data_generators();
+            }
+        } else {
+            if !currently_stopped {
+                self.logger.info("Application state changed (Paused/Stopping), signaling data generators to stop.");
+                self.data_generator_stop_signal
+                    .store(true, Ordering::SeqCst);
             }
         }
     }
@@ -355,16 +422,13 @@ impl App {
         let print_interval = Duration::from_secs(self.config.cli_update_interval_secs.unwrap_or(2));
         let mut last_print_time = Instant::now();
 
-        // Start data generator if not already running (e.g. if it's configured to start paused)
         if self.config.start_paused.unwrap_or(false) {
-            self.logger.info("Application configured to start paused. Data generator will not start automatically.");
+            self.logger.info("Application configured to start paused. Data generators will not start automatically.");
         } else {
-             self.data_generator.spawn(); // Start data generator
+            self.spawn_data_generators();
         }
 
-
         while running.load(Ordering::SeqCst) {
-            // Check for runtime duration limit
             if let Some(duration) = self.config.run_duration {
                 if self.stats.start_time.elapsed() >= duration {
                     self.logger.info(&format!(
@@ -376,108 +440,111 @@ impl App {
                 }
             }
 
-            // Update stats from workers
             let _stats_updated = self.stats_updater.update_stats(
                 &mut self.stats,
                 &mut self.target_stats_rx,
-                &self.logger, // Logger is now CLI-aware
+                &self.logger,
             );
-            
-            // Manage data generator
+
             self.manage_data_generator();
 
-
-            // Print stats periodically
             if last_print_time.elapsed() >= print_interval {
                 self.print_cli_stats();
                 last_print_time = Instant::now();
             }
 
-            // Minimal sleep to prevent 100% CPU usage
             sleep(Duration::from_millis(100)).await;
         }
-        self.print_cli_stats(); // Print final stats before exiting
+        self.print_cli_stats();
         Ok(())
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
+        self.spawn_workers();
+
         if self.cli_mode {
             self.run_cli().await?;
         } else {
             self.run_tui().await?;
         }
-        // Common shutdown logic after TUI or CLI loop finishes
         self.shutdown_components().await;
         Ok(())
     }
-    
+
     async fn shutdown_components(&mut self) {
         self.stats.running_state = RunningState::Stopping;
         self.logger.info("Shutting down application components...");
 
-        // 1. 发送全局停止信号给 worker
         self.logger.info("Sending global stop signal to workers...");
-        let _ = self.control_tx.send(WorkerMessage::Stop); // Workers will observe this
-        
-        // 2. 停止数据生成器
-        // Data generator also observes WorkerMessage::Stop if its control_rx is subscribed to control_tx
-        // or needs its own stop mechanism if independent. Assuming data_generator.stop() handles its shutdown.
-        self.logger.info("Stopping data generator...");
-        self.data_generator.stop().await; // Ensure this properly waits for the generator to finish
-        
-        // 3. Wait for worker tasks to finish
-        // Workers should exit their loops upon receiving WorkerMessage::Stop
-        self.logger.info("Waiting for worker tasks to finish...");
-        // Iterate over handles and await them. drain() consumes the vector.
-        for (i, handle) in self.worker_handles.drain(..).enumerate() {
-            self.logger.info(&format!("Waiting for worker task {}...", i));
+        let _ = self.control_tx.send(WorkerMessage::Stop);
+
+        self.logger.info("Signaling data generators to stop...");
+        self.data_generator_stop_signal
+            .store(true, Ordering::SeqCst);
+        if self.data_pool_tx.is_some() {
+            self.data_pool_tx.take();
+            self.logger
+                .info("Data pool sender dropped during shutdown.");
+        }
+
+        self.logger
+            .info("Waiting for data generator tasks to finish...");
+        for (i, handle) in self.data_generator_handles.drain(..).enumerate() {
+            self.logger
+                .info(&format!("Waiting for data generator task {}...", i));
             if let Err(e) = handle.await {
-                // Log error if a worker task panicked
-                self.logger.error(&format!("Worker task {} panicked: {:?}", i, e));
+                self.logger
+                    .error(&format!("Data generator task {} panicked: {:?}", i, e));
+            } else {
+                self.logger
+                    .info(&format!("Data generator task {} finished.", i));
+            }
+        }
+        self.logger.info("All data generator tasks finished.");
+
+        self.logger.info("Waiting for worker tasks to finish...");
+        for (i, handle) in self.worker_handles.drain(..).enumerate() {
+            self.logger
+                .info(&format!("Waiting for worker task {}...", i));
+            if let Err(e) = handle.await {
+                self.logger
+                    .error(&format!("Worker task {} panicked: {:?}", i, e));
             } else {
                 self.logger.info(&format!("Worker task {} finished.", i));
             }
         }
         self.logger.info("All worker tasks finished.");
 
-        // 4. Close the logger's TUI sender and wait for the log receiver thread
         if !self.cli_mode {
-            self.logger.info("Closing logger's TUI sender to allow log_receiver to stop...");
-            self.logger.close_sender(); // This makes the sender None and signals the log_receiver
-            // self.log_rx = None; // This was already taken by spawn_log_receiver
+            self.logger
+                .info("Closing logger's TUI sender to allow log_receiver to stop...");
+            self.logger.close_sender();
 
-            self.logger.info("Logger's TUI sender closed. Waiting for log receiver thread...");
+            self.logger
+                .info("Logger's TUI sender closed. Waiting for log receiver thread...");
             if let Some(handle) = self.log_receiver_handle.take() {
-                // The log_receiver loop should exit when the sender is disconnected.
-                // handle.thread().unpark(); // Unparking might not be necessary if try_recv + sleep is used
                 if let Err(e) = handle.join() {
-                    self.logger.error(&format!("Log receiver thread panicked: {:?}", e));
+                    self.logger
+                        .error(&format!("Log receiver thread panicked: {:?}", e));
                 } else {
                     self.logger.info("Log receiver thread finished.");
                 }
             }
         }
 
-        // 5. 清理TUI资源 (terminal restoration)
-        // This should happen after all threads that might interact with the TUI are stopped.
         if !self.cli_mode {
-            self.logger.info("Cleaning up TUI resources (restoring terminal)...");
-            // 恢复终端设置
-            // It's safer to call disable_raw_mode and LeaveAlternateScreen
-            // after all other operations that might depend on the raw mode or alternate screen.
-            // The cleanup() method in main.rs also does this, consider centralizing.
-            // For now, ensure it's done here as part of shutdown.
+            self.logger
+                .info("Cleaning up TUI resources (restoring terminal)...");
             if let Some(terminal) = self.terminal.as_mut() {
-                 let _ = execute!(
+                let _ = execute!(
                     terminal.backend_mut(),
                     LeaveAlternateScreen,
                     DisableMouseCapture
                 );
                 let _ = terminal.show_cursor();
             }
-            let _ = disable_raw_mode(); // Always try to disable raw mode if it was enabled.
-            
-            self.terminal.take(); // Drop the terminal instance.
+            let _ = disable_raw_mode();
+            self.terminal.take();
             self.logger.info("TUI resources cleaned up.");
         }
         self.logger.info("All components shut down.");
@@ -487,15 +554,13 @@ impl App {
         if !self.cli_mode {
             self.logger.info("Restoring terminal state (TUI mode)...");
             if let Some(terminal) = self.terminal.as_mut() {
-                 execute!(
+                execute!(
                     terminal.backend_mut(),
                     LeaveAlternateScreen,
                     DisableMouseCapture
                 )?;
                 terminal.show_cursor()?;
             }
-            // disable_raw_mode should be called regardless of terminal instance existence
-            // if enable_raw_mode was called.
             disable_raw_mode()?;
             self.logger.info("Terminal state restored.");
         } else {

@@ -1,7 +1,7 @@
 use std::sync::mpsc::Sender;
 use chrono::Utc;
 
-use crate::ui::DebugInfo; // Assuming DebugInfo is defined in ui module and includes a timestamp and message
+use crate::ui::DebugInfo;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -9,7 +9,6 @@ pub enum LogLevel {
     Info,
     Warning,
     Error,
-    // Debug, // Consider adding a Debug level if not already present
 }
 
 impl LogLevel {

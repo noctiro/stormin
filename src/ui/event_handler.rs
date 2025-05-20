@@ -1,4 +1,6 @@
-use crate::app::App; // Assuming App will be accessible, might need to adjust path or make App fields public
+use std::sync::atomic::Ordering;
+
+use crate::app::App;
 use crate::ui::RunningState;
 use crate::worker::WorkerMessage;
 use crossterm::event::{Event, KeyCode, MouseButton, MouseEventKind};
@@ -82,7 +84,7 @@ pub fn handle_event(app: &mut App, event: Event) -> (bool, AppAction) {
                 app.stats.running_state = RunningState::Paused;
                 app.logger
                     .info("Pausing workers and data generator (event)...");
-                app.data_generator.set_running_flag(false);
+                app.data_generator_stop_signal.store(true, Ordering::Relaxed);
                 if let Err(e) = app.control_tx.send(WorkerMessage::Pause) {
                     app.logger
                         .warning(&format!("Failed to broadcast Pause message: {}", e));
@@ -94,16 +96,12 @@ pub fn handle_event(app: &mut App, event: Event) -> (bool, AppAction) {
                 app.stats.running_state = RunningState::Running;
                 app.logger
                     .info("Resuming workers and data generator (event)...");
-                if !app.data_generator.is_running() {
-                    if app.data_generator.is_finished() {
-                        app.logger
-                            .info("Data generator was stopped or finished, respawning (event)...");
-                        app.data_generator.spawn();
-                    } else {
-                        app.data_generator.set_running_flag(true);
-                        app.logger
-                            .info("Data generator was paused, resuming (event)...");
-                    }
+                // 如果数据生成器被停止，我们需要重新启动它们
+                app.data_generator_stop_signal.store(false, Ordering::Relaxed);
+                // 如果没有正在运行的数据生成器，则重新生成它们
+                if app.data_generator_handles.is_empty() {
+                    app.logger.info("Data generators were stopped, respawning...");
+                    app.spawn_data_generators();
                 }
                 if let Err(e) = app.control_tx.send(WorkerMessage::Resume) {
                     app.logger

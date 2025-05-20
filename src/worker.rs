@@ -5,8 +5,11 @@ use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
 use reqwest::{Client, Method};
 use std::thread::ThreadId;
-use std::time::{Duration, Instant};
-use tokio::sync::{broadcast, mpsc};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::sync::{Mutex as TokioMutex, broadcast, mpsc};
 use tokio::time::sleep;
 
 // Structure for pre-generated request data
@@ -38,9 +41,9 @@ pub struct TargetUpdate {
 }
 
 pub async fn worker_loop(
-    mut control_rx: broadcast::Receiver<WorkerMessage>, // For Pause, Resume, Stop
-    mut data_rx: broadcast::Receiver<PreGeneratedRequest>, // Channel for pre-generated data
-    config: AttackConfig, // Still needed for timeout, client config etc.
+    mut control_rx: broadcast::Receiver<WorkerMessage>, // Control channel remains broadcast
+    data_pool_rx: Arc<TokioMutex<mpsc::Receiver<PreGeneratedRequest>>>, // Use TokioMutex
+    config: AttackConfig,
     thread_id: ThreadId,
     logger: Logger,
     stats_tx: mpsc::Sender<TargetUpdate>, // Corrected type from previous thought
@@ -155,11 +158,15 @@ pub async fn worker_loop(
                 }
             }, // Comma separates select arms
 
-            data_msg_result = data_rx.recv() => {
-                match data_msg_result {
-                    Ok(pre_gen_req) => {
-                        let PreGeneratedRequest {
-                            target_id,
+            // Receive from the shared mpsc channel, requires locking the mutex
+            data_msg_result = async {
+                let mut rx_guard = data_pool_rx.lock().await; // Lock the TokioMutex asynchronously
+                rx_guard.recv().await // Receive from the mpsc channel
+            } => {
+                 match data_msg_result {
+                    Some(pre_gen_req) => { // mpsc::Receiver::recv returns Option<T>
+                         let PreGeneratedRequest {
+                             target_id,
                             target_url,
                             method,
                             rendered_headers,
@@ -259,13 +266,11 @@ pub async fn worker_loop(
                             break 'main_loop;
                         }
                     }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        logger.info(&format!("Worker {:?}: Data channel closed. Exiting.", thread_id));
+                    None => { // Channel closed
+                        logger.info(&format!("Worker {:?}: Data pool channel closed. Exiting.", thread_id));
                         break 'main_loop;
                     }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        logger.warning(&format!("Worker {:?}: Data channel lagged by {} messages. Worker might be too slow or generator too fast.", thread_id, n));
-                    }
+                    // Note: mpsc::Receiver doesn't have a Lagged error like broadcast::Receiver
                 }
             }
         }

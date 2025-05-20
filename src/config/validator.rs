@@ -10,6 +10,7 @@ pub enum ConfigError {
     InvalidMethod(String),
     InvalidThreadCount,
     InvalidTimeoutValue,
+    InvalidGeneratorThreadCount,
     ProxyParseError(String),
     TemplateParseError(String),
     NoTargets,
@@ -32,6 +33,9 @@ impl fmt::Display for ConfigError {
             ConfigError::InvalidMethod(m) => write!(f, "Invalid HTTP method: {}", m),
             ConfigError::InvalidThreadCount => write!(f, "Thread count must be at least 1"),
             ConfigError::InvalidTimeoutValue => write!(f, "Timeout must be a positive number"),
+            ConfigError::InvalidGeneratorThreadCount => {
+                write!(f, "Generator thread count must be at least 1")
+            }
             ConfigError::ProxyParseError(e) => write!(f, "Invalid proxy configuration: {}", e),
             ConfigError::TemplateParseError(e) => write!(f, "Template parsing error: {}", e),
             ConfigError::NoTargets => write!(f, "No targets specified in configuration"),
@@ -73,7 +77,11 @@ impl fmt::Display for ConfigError {
                 )
             }
             ConfigError::InvalidDurationFormat(e) => {
-                write!(f, "Invalid duration format: {}. Expected format like '10s', '5m', '1h30m'.", e)
+                write!(
+                    f,
+                    "Invalid duration format: {}. Expected format like '10s', '5m', '1h30m'.",
+                    e
+                )
             }
         }
     }
@@ -116,7 +124,10 @@ pub fn validate_target(target: &crate::config::loader::RawTarget) -> Result<(), 
         // A more robust validation might be needed depending on requirements
         if !domain.contains('.') && !domain.contains(':') && domain != "localhost" {
             // Basic check, might need refinement
-            // return Err(ConfigError::InvalidUrl(format!("Invalid domain or IP address: {}", domain)));
+            return Err(ConfigError::InvalidUrl(format!(
+                "Invalid domain or IP address: {}",
+                domain
+            )));
         }
     } else {
         return Err(ConfigError::InvalidUrl(
