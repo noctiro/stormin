@@ -302,5 +302,42 @@ pub fn validate_rate_control_config(
         }
     }
 
+    // 验证生成器延迟控制参数
+    if let Some(min_delay) = raw_config.min_delay_micros {
+        if min_delay == 0 {
+            return Err(ConfigError::InvalidTimeoutValue);
+        }
+    }
+
+    if let Some(max_delay) = raw_config.max_delay_micros {
+        if max_delay == 0 {
+            return Err(ConfigError::InvalidTimeoutValue);
+        }
+        // 如果最小延迟也设置了，确保最大延迟大于最小延迟
+        if let Some(min_delay) = raw_config.min_delay_micros {
+            if max_delay < min_delay {
+                return Err(ConfigError::InvalidTimeoutValue);
+            }
+        }
+    }
+
+    if let Some(initial_delay) = raw_config.initial_delay_micros {
+        if initial_delay == 0 {
+            return Err(ConfigError::InvalidTimeoutValue);
+        }
+    }
+
+    if let Some(factor) = raw_config.increase_factor {
+        if factor <= 1.0 {
+            return Err(ConfigError::InvalidRpsAdjustFactor(factor.to_string()));
+        }
+    }
+
+    if let Some(factor) = raw_config.decrease_factor {
+        if factor >= 1.0 || factor <= 0.0 {
+            return Err(ConfigError::InvalidRpsAdjustFactor(factor.to_string()));
+        }
+    }
+
     Ok(())
 }

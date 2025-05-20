@@ -31,21 +31,27 @@ pub enum TemplateAstNode {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawConfig {
-    pub proxy_file: Option<String>,
-    pub threads: Option<usize>,
-    pub timeout: Option<u64>,
+    pub threads: Option<usize>,           // 攻击线程数
     pub generator_threads: Option<usize>, // 数据生成器线程数
+    pub timeout: Option<u64>,
+    pub proxy_file: Option<String>,
     // 新增的动态速率配置项
     pub target_rps: Option<f64>,
     pub min_success_rate: Option<f64>,            // 0.0 to 1.0
     pub rps_adjust_factor: Option<f64>,           // e.g., 0.1 for 10% adjustment per step
     pub success_rate_penalty_factor: Option<f64>, // e.g., 1.5 to multiply delay by 1.5
-    #[serde(rename = "Target")]
-    pub targets: Vec<RawTarget>,
-    // New fields for CLI mode and general control
+    // 生成器延迟控制配置项
+    pub min_delay_micros: Option<u64>,     // 最小延迟 (微秒)
+    pub max_delay_micros: Option<u64>,     // 最大延迟 (微秒)
+    pub initial_delay_micros: Option<u64>, // 初始延迟 (微秒)
+    pub increase_factor: Option<f64>,      // 延迟增加因子
+    pub decrease_factor: Option<f64>,      // 延迟减少因子
+    // Fields for CLI mode and general control
     pub cli_update_interval_secs: Option<u64>, // Interval for CLI stats printing
     pub start_paused: Option<bool>,            // Start in paused state
     pub run_duration: Option<String>,          // e.g., "10m", "1h30m", "30s"
+    #[serde(rename = "Target")]
+    pub targets: Vec<RawTarget>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,10 +155,10 @@ impl ProxyConfig {
 #[derive(Clone, Debug)]
 pub struct AttackConfig {
     pub threads: usize,
+    pub generator_threads: usize,
     pub timeout: u64,
     pub targets: Vec<CompiledTarget>,
     pub proxies: Vec<ProxyConfig>,
-    pub generator_threads: Option<usize>,
     // 数据生成器默认配置
     pub min_delay_micros: u64,     // 最小延迟 (微秒)
     pub max_delay_micros: u64,     // 最大延迟 (微秒)
@@ -160,9 +166,9 @@ pub struct AttackConfig {
     pub increase_factor: f64,      // 延迟增加因子
     pub decrease_factor: f64,      // 延迟减少因子
     // 运行控制配置
-    pub cli_update_interval_secs: Option<u64>,
-    pub start_paused: Option<bool>,
-    pub run_duration: Option<Duration>, // Parsed from string
+    pub cli_update_interval_secs: u64,
+    pub start_paused: bool,
+    pub run_duration: Duration, // Changed from Option<Duration> to Duration with a default value
 }
 
 #[derive(Clone, Debug)]
@@ -371,6 +377,7 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
         }
     }
 
+    // 计算线程数，默认是系统可用线程数 * 16
     let threads = if let Some(t) = raw.threads {
         if t < 1 {
             return Err(ConfigError::InvalidThreadCount.into());
@@ -381,6 +388,17 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
             .unwrap_or(NonZeroUsize::new(1).unwrap())
             .get()
             * 16
+    };
+
+    // 计算数据生成器线程数，默认是 threads/512，最小为 1
+    let generator_threads = match raw.generator_threads {
+        Some(g) => {
+            if g < 1 {
+                return Err(ConfigError::InvalidGeneratorThreadCount.into());
+            }
+            g
+        }
+        None => (threads / 512).max(1),
     };
 
     let timeout = if let Some(t) = raw.timeout {
@@ -521,26 +539,12 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
         return Err(ConfigError::NoTargets.into());
     }
 
-    let cli_update_interval_secs = raw.cli_update_interval_secs;
-    let start_paused = raw.start_paused;
-
     let run_duration = match raw.run_duration {
         Some(duration_str) => match parse_duration_str(&duration_str) {
-            Ok(d) => Some(d),
+            Ok(d) => d,
             Err(e) => return Err(Box::new(e) as Box<dyn Error>),
         },
-        None => None,
-    };
-
-    // 计算数据生成器线程数，默认是 threads/512，最小为 1
-    let generator_threads = match raw.generator_threads {
-        Some(g) => {
-            if g < 1 {
-                return Err(ConfigError::InvalidGeneratorThreadCount.into());
-            }
-            Some(g)
-        }
-        None => Some((threads / 512).max(1)),
+        None => Duration::from_secs(0),
     };
 
     Ok(AttackConfig {
@@ -549,13 +553,13 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
         targets: compiled,
         proxies,
         generator_threads,
-        min_delay_micros: 1000,     // 1ms最小延迟
-        max_delay_micros: 100_000,  // 100ms最大延迟
-        initial_delay_micros: 5000, // 5ms初始延迟
-        increase_factor: 1.2,       // 20%增长
-        decrease_factor: 0.85,      // 15%减少
-        cli_update_interval_secs,
-        start_paused,
+        min_delay_micros: raw.min_delay_micros.unwrap_or(1000), // 默认1ms最小延迟
+        max_delay_micros: raw.max_delay_micros.unwrap_or(100_000), // 默认100ms最大延迟
+        initial_delay_micros: raw.initial_delay_micros.unwrap_or(5000), // 默认5ms初始延迟
+        increase_factor: raw.increase_factor.unwrap_or(1.2),    // 默认20%增长
+        decrease_factor: raw.decrease_factor.unwrap_or(0.85),   // 默认15%减少
+        cli_update_interval_secs: raw.cli_update_interval_secs.unwrap_or(2),
+        start_paused: raw.start_paused.unwrap_or(false),
         run_duration,
     })
 }

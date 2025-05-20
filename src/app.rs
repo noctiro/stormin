@@ -133,10 +133,10 @@ impl App {
 
     // spawn_data_generators is defined *after* App::new
     pub fn spawn_data_generators(&mut self) {
-        let num_generators = self.config.generator_threads.unwrap_or(1).max(1);
+        let generator_threads = self.config.generator_threads;
         self.logger.info(&format!(
             "Spawning {} data generator tasks...",
-            num_generators
+            generator_threads
         ));
 
         let pool_size = self.config.threads * 50;
@@ -147,7 +147,7 @@ impl App {
         self.data_generator_stop_signal
             .store(false, Ordering::SeqCst);
 
-        for i in 0..num_generators {
+        for i in 0..generator_threads {
             let cfg = self.config.clone();
             let pool_tx_clone = self
                 .data_pool_tx
@@ -281,7 +281,7 @@ impl App {
             }
         }
 
-        if !self.config.start_paused.unwrap_or(false) {
+        if !self.config.start_paused {
             self.spawn_data_generators();
         }
 
@@ -353,16 +353,20 @@ impl App {
     }
 
     fn print_cli_stats(&self) {
+        let remaining_time = if self.config.run_duration.as_secs() > 0 {
+            format!(
+                "(remaining: {:?})",
+                self.config
+                    .run_duration
+                    .saturating_sub(self.stats.start_time.elapsed())
+            )
+        } else {
+            String::new()
+        };
         println!(
             "{} ----- Stats ----- {}",
             chrono::Utc::now().to_rfc3339(),
-            self.config.run_duration.map_or_else(
-                || "".to_string(),
-                |d| format!(
-                    "(remaining: {:?})",
-                    d.saturating_sub(self.stats.start_time.elapsed())
-                )
-            )
+            remaining_time
         );
         println!(
             "Total: {}, Success: {}, Failure: {}, RPS: {}",
@@ -389,15 +393,11 @@ impl App {
                     .info("Data generators were stopped, signaling them to resume.");
                 self.data_generator_stop_signal
                     .store(false, Ordering::SeqCst);
-                if self.data_generator_handles.is_empty()
-                    && !self.config.start_paused.unwrap_or(false)
-                {
+                if self.data_generator_handles.is_empty() && !self.config.start_paused {
                     self.logger.info("No active data generator handles found while trying to resume. Spawning new generators.");
                     self.spawn_data_generators();
                 }
-            } else if self.data_generator_handles.is_empty()
-                && !self.config.start_paused.unwrap_or(false)
-            {
+            } else if self.data_generator_handles.is_empty() && !self.config.start_paused {
                 self.logger.info("No active data generator handles found and not explicitly stopped. Spawning new generators.");
                 self.spawn_data_generators();
             }
@@ -419,25 +419,25 @@ impl App {
             println!("\nCtrl-C received, initiating shutdown...");
         })?;
 
-        let print_interval = Duration::from_secs(self.config.cli_update_interval_secs.unwrap_or(2));
+        let print_interval = Duration::from_secs(self.config.cli_update_interval_secs);
         let mut last_print_time = Instant::now();
 
-        if self.config.start_paused.unwrap_or(false) {
+        if self.config.start_paused {
             self.logger.info("Application configured to start paused. Data generators will not start automatically.");
         } else {
             self.spawn_data_generators();
         }
 
         while running.load(Ordering::SeqCst) {
-            if let Some(duration) = self.config.run_duration {
-                if self.stats.start_time.elapsed() >= duration {
-                    self.logger.info(&format!(
-                        "Configured run duration of {:?} reached. Stopping.",
-                        duration
-                    ));
-                    running.store(false, Ordering::SeqCst);
-                    break;
-                }
+            if self.config.run_duration.as_secs() > 0
+                && self.stats.start_time.elapsed() >= self.config.run_duration
+            {
+                self.logger.info(&format!(
+                    "Configured run duration of {:?} reached. Stopping.",
+                    self.config.run_duration
+                ));
+                running.store(false, Ordering::SeqCst);
+                break;
             }
 
             let _stats_updated = self.stats_updater.update_stats(
