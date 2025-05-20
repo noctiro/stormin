@@ -1,3 +1,5 @@
+![Screenshot](./doc/screenshot.png)
+
 # Stormin
 
 Stormin 是一个拥有 TUI 界面的注册轰炸机，专门用于整治盗号网站。
@@ -66,7 +68,7 @@ params = { }                # URL参数(可以使用模板语法)（可选）
 params = { sv = "${base64:${base64:${password}}}" }
 ```
 
-详情请见 [模板表达式语法](grammar.md)
+详情请见 [模板表达式语法](./doc/grammar.md)
 
 ### TUI 快捷键
 
