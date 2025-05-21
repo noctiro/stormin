@@ -1,13 +1,12 @@
 use crate::config::loader::{self, load_config_and_compile};
 use crate::data_generator;
 use crate::logger::Logger;
-use crate::ui::event_handler::{AppAction, handle_event};
 use crate::ui::stats_updater::StatsUpdater;
 use crate::ui::{DebugInfo, LayoutRects};
-use crate::ui::{RunningState, Stats, TargetStats, draw_ui};
+use crate::ui::{RunningState, Stats, TargetStats};
 use crate::worker::{PreGeneratedRequest, TargetUpdate, WorkerMessage, worker_loop};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture},
+    event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -25,28 +24,29 @@ use std::{
     time::{Duration, Instant},
 };
 use sysinfo::System;
+use tokio::runtime::Handle;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::{broadcast, mpsc};
-use tokio::{task::JoinHandle, time::sleep};
+use tokio::task::JoinHandle;
 
 pub struct App {
-    config: loader::AttackConfig,
-    pub stats: Stats,
+    pub config: loader::AttackConfig,
+    pub stats: Arc<TokioMutex<Stats>>,
     pub logger: Logger,
-    terminal: Option<Terminal<CrosstermBackend<Stdout>>>,
+    pub terminal: Option<Terminal<CrosstermBackend<Stdout>>>,
     pub control_tx: broadcast::Sender<WorkerMessage>,
     data_pool_tx: Option<mpsc::Sender<PreGeneratedRequest>>,
     data_pool_rx: Option<Arc<TokioMutex<mpsc::Receiver<PreGeneratedRequest>>>>, // Use TokioMutex
-    target_stats_tx: mpsc::Sender<TargetUpdate>,
-    target_stats_rx: mpsc::Receiver<TargetUpdate>,
+    pub target_stats_tx: mpsc::Sender<TargetUpdate>,
+    pub target_stats_rx: mpsc::Receiver<TargetUpdate>,
     log_rx: Option<std_mpsc::Receiver<DebugInfo>>,
     worker_handles: Vec<JoinHandle<()>>,
     pub data_generator_handles: Vec<JoinHandle<()>>,
     pub data_generator_stop_signal: Arc<AtomicBool>,
     log_receiver_handle: Option<thread::JoinHandle<()>>,
     pub layout_rects: LayoutRects,
-    stats_updater: StatsUpdater,
-    cli_mode: bool,
+    pub stats_updater: StatsUpdater,
+    pub cli_mode: bool,
 }
 
 impl App {
@@ -77,7 +77,7 @@ impl App {
         let (target_stats_tx, target_stats_rx) = mpsc::channel(256);
         let logger = Logger::new(log_tx_for_logger, cli_mode);
 
-        let stats = Stats {
+        let stats = Arc::new(TokioMutex::new(Stats {
             targets: config
                 .targets
                 .iter()
@@ -89,6 +89,8 @@ impl App {
                     last_success_time: None,
                     last_failure_time: None,
                     last_network_error: None,
+                    is_dying: false,
+                    error_rate: 0.0,
                 })
                 .collect(),
             threads: Vec::new(), // This might be unused now or could represent something else
@@ -107,7 +109,7 @@ impl App {
             rps_history: VecDeque::with_capacity(120),
             successful_requests_per_second_history: VecDeque::with_capacity(120),
             success_rate_history: VecDeque::with_capacity(120),
-        };
+        }));
 
         Ok(App {
             // App::new's Ok block starts here
@@ -147,6 +149,12 @@ impl App {
         self.data_generator_stop_signal
             .store(false, Ordering::SeqCst);
 
+        // 均分targets
+        let mut target_chunks: Vec<Vec<usize>> = vec![Vec::new(); generator_threads];
+        for (i, t) in self.config.targets.iter().enumerate() {
+            target_chunks[i % generator_threads].push(t.id);
+        }
+
         for i in 0..generator_threads {
             let cfg = self.config.clone();
             let pool_tx_clone = self
@@ -156,14 +164,18 @@ impl App {
                 .clone();
             let logger_clone = self.logger.clone();
             let stop_signal_clone = self.data_generator_stop_signal.clone();
+            let my_target_ids = target_chunks[i].clone();
+            let stats_arc = Arc::clone(&self.stats_arc());
 
             let handle = tokio::spawn(async move {
                 data_generator::data_generator_loop(
                     i,
                     cfg,
+                    my_target_ids,
                     pool_tx_clone,
                     logger_clone,
                     stop_signal_clone,
+                    stats_arc,
                 )
                 .await;
             });
@@ -255,224 +267,19 @@ impl App {
         }
     }
 
-    async fn run_tui(&mut self) -> Result<(), Box<dyn Error>> {
-        self.logger.info("Starting TUI application loop.");
-        let mut last_draw_time = Instant::now();
-        let redraw_interval = Duration::from_millis(100);
-        let mut needs_redraw = true;
-
-        let running = std::sync::Arc::new(AtomicBool::new(true));
-        let r = running.clone();
-        ctrlc::set_handler(move || {
-            r.store(false, Ordering::SeqCst);
-        })?;
-
-        let terminal = self
-            .terminal
-            .as_mut()
-            .ok_or("Terminal not initialized for TUI mode")?;
-
-        match draw_ui(terminal, &self.stats) {
-            Ok(all_rects) => self.update_layout_rects(all_rects),
-            Err(e) => {
-                self.logger
-                    .error(&format!("Initial TUI draw failed: {}", e));
-                return Err(e.into());
-            }
-        }
-
-        if !self.config.start_paused {
-            self.spawn_data_generators();
-        }
-
-        while running.load(Ordering::SeqCst) {
-            let mut received_input_or_event = false;
-            if event::poll(Duration::from_millis(50))? {
-                received_input_or_event = true;
-                let event_read = event::read()?;
-                let (redraw_from_event, app_action) = handle_event(self, event_read);
-                needs_redraw = redraw_from_event || needs_redraw;
-
-                match app_action {
-                    AppAction::Quit => {
-                        self.logger.info("Quit action received. Signaling workers to stop and exiting immediately.");
-                        let _ = self.control_tx.send(WorkerMessage::Stop);
-                        if let Some(terminal) = self.terminal.as_mut() {
-                            let _ = execute!(
-                                terminal.backend_mut(),
-                                LeaveAlternateScreen,
-                                DisableMouseCapture
-                            );
-                            let _ = terminal.show_cursor();
-                        }
-                        let _ = disable_raw_mode();
-                        self.logger
-                            .info("Exiting application now via std::process::exit(0).");
-                        std::process::exit(0);
-                    }
-                    _ => {}
-                }
-            }
-
-            if !received_input_or_event {
-                let stats_updated = self.stats_updater.update_stats(
-                    &mut self.stats,
-                    &mut self.target_stats_rx,
-                    &self.logger,
-                );
-                if stats_updated {
-                    needs_redraw = true;
-                }
-            }
-
-            self.manage_data_generator();
-
-            if needs_redraw || last_draw_time.elapsed() >= redraw_interval {
-                let terminal_mut = self
-                    .terminal
-                    .as_mut()
-                    .ok_or("Terminal not available for TUI draw")?;
-                match draw_ui(terminal_mut, &self.stats) {
-                    Ok(all_rects) => {
-                        self.update_layout_rects(all_rects);
-                        last_draw_time = Instant::now();
-                        needs_redraw = false;
-                    }
-                    Err(e) => {
-                        self.logger.error(&format!("Failed to draw TUI: {}", e));
-                        running.store(false, Ordering::SeqCst);
-                    }
-                }
-            }
-
-            if !received_input_or_event && !needs_redraw {
-                sleep(Duration::from_millis(10)).await;
-            }
-        }
-        Ok(())
-    }
-
-    fn print_cli_stats(&self) {
-        let remaining_time = if self.config.run_duration.as_secs() > 0 {
-            format!(
-                "(remaining: {:?})",
-                self.config
-                    .run_duration
-                    .saturating_sub(self.stats.start_time.elapsed())
-            )
-        } else {
-            String::new()
-        };
-        println!(
-            "{} ----- Stats ----- {}",
-            chrono::Utc::now().to_rfc3339(),
-            remaining_time
-        );
-        println!(
-            "Total: {}, Success: {}, Failure: {}, RPS: {}",
-            self.stats.total,
-            self.stats.success,
-            self.stats.failure,
-            self.stats.rps_history.back().copied().unwrap_or(0u64)
-        );
-        for target_stat in &self.stats.targets {
-            println!(
-                "  Target {}: Success: {}, Failure: {}",
-                target_stat.id, target_stat.success, target_stat.failure
-            );
-        }
-        println!("--------------------");
-    }
-
-    fn manage_data_generator(&mut self) {
-        let currently_stopped = self.data_generator_stop_signal.load(Ordering::SeqCst);
-
-        if self.stats.running_state == RunningState::Running {
-            if currently_stopped {
-                self.logger
-                    .info("Data generators were stopped, signaling them to resume.");
-                self.data_generator_stop_signal
-                    .store(false, Ordering::SeqCst);
-                if self.data_generator_handles.is_empty() && !self.config.start_paused {
-                    self.logger.info("No active data generator handles found while trying to resume. Spawning new generators.");
-                    self.spawn_data_generators();
-                }
-            } else if self.data_generator_handles.is_empty() && !self.config.start_paused {
-                self.logger.info("No active data generator handles found and not explicitly stopped. Spawning new generators.");
-                self.spawn_data_generators();
-            }
-        } else {
-            if !currently_stopped {
-                self.logger.info("Application state changed (Paused/Stopping), signaling data generators to stop.");
-                self.data_generator_stop_signal
-                    .store(true, Ordering::SeqCst);
-            }
-        }
-    }
-
-    async fn run_cli(&mut self) -> Result<(), Box<dyn Error>> {
-        self.logger.info("Starting CLI application loop.");
-        let running = std::sync::Arc::new(AtomicBool::new(true));
-        let r = running.clone();
-        ctrlc::set_handler(move || {
-            r.store(false, Ordering::SeqCst);
-            println!("\nCtrl-C received, initiating shutdown...");
-        })?;
-
-        let print_interval = Duration::from_secs(self.config.cli_update_interval_secs);
-        let mut last_print_time = Instant::now();
-
-        if self.config.start_paused {
-            self.logger.info("Application configured to start paused. Data generators will not start automatically.");
-        } else {
-            self.spawn_data_generators();
-        }
-
-        while running.load(Ordering::SeqCst) {
-            if self.config.run_duration.as_secs() > 0
-                && self.stats.start_time.elapsed() >= self.config.run_duration
-            {
-                self.logger.info(&format!(
-                    "Configured run duration of {:?} reached. Stopping.",
-                    self.config.run_duration
-                ));
-                running.store(false, Ordering::SeqCst);
-                break;
-            }
-
-            let _stats_updated = self.stats_updater.update_stats(
-                &mut self.stats,
-                &mut self.target_stats_rx,
-                &self.logger,
-            );
-
-            self.manage_data_generator();
-
-            if last_print_time.elapsed() >= print_interval {
-                self.print_cli_stats();
-                last_print_time = Instant::now();
-            }
-
-            sleep(Duration::from_millis(100)).await;
-        }
-        self.print_cli_stats();
-        Ok(())
-    }
-
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
         self.spawn_workers();
-
         if self.cli_mode {
-            self.run_cli().await?;
+            crate::ui::cli::run_cli(self).await?;
         } else {
-            self.run_tui().await?;
+            crate::ui::run_tui(self).await?;
         }
         self.shutdown_components().await;
         Ok(())
     }
 
     async fn shutdown_components(&mut self) {
-        self.stats.running_state = RunningState::Stopping;
+        Handle::current().block_on(self.stats.lock()).running_state = RunningState::Stopping;
         self.logger.info("Shutting down application components...");
 
         self.logger.info("Sending global stop signal to workers...");
@@ -567,5 +374,38 @@ impl App {
             self.logger.info("CLI mode: No terminal state to restore.");
         }
         Ok(())
+    }
+
+    pub fn stats_arc(&self) -> Arc<TokioMutex<Stats>> {
+        self.stats.clone()
+    }
+
+    pub async fn manage_data_generator(&mut self) {
+        let running_state = {
+            let stats = self.stats.lock().await;
+            stats.running_state
+        };
+        let currently_stopped = self.data_generator_stop_signal.load(Ordering::SeqCst);
+        if running_state == RunningState::Running {
+            if currently_stopped {
+                self.logger
+                    .info("Data generators were stopped, signaling them to resume.");
+                self.data_generator_stop_signal
+                    .store(false, Ordering::SeqCst);
+                if self.data_generator_handles.is_empty() && !self.config.start_paused {
+                    self.logger.info("No active data generator handles found while trying to resume. Spawning new generators.");
+                    self.spawn_data_generators();
+                }
+            } else if self.data_generator_handles.is_empty() && !self.config.start_paused {
+                self.logger.info("No active data generator handles found and not explicitly stopped. Spawning new generators.");
+                self.spawn_data_generators();
+            }
+        } else {
+            if !currently_stopped {
+                self.logger.info("Application state changed (Paused/Stopping), signaling data generators to stop.");
+                self.data_generator_stop_signal
+                    .store(true, Ordering::SeqCst);
+            }
+        }
     }
 }

@@ -1,7 +1,7 @@
 use crate::logger::Logger;
 use crate::ui::{DebugInfo, Stats, ThreadStats}; // Assuming Stats and related structs are accessible
 use crate::worker::TargetUpdate;
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 const MAX_CONSOLE_LOGS: usize = 250;
@@ -37,9 +37,15 @@ impl StatsUpdater {
 
         // Update system info less frequently
         self.sysinfo_tick = self.sysinfo_tick.wrapping_add(1);
-        if self.sysinfo_tick % 20 == 0 { // e.g., every 1 second if poll is 50ms (adjust as needed)
+        if self.sysinfo_tick % 20 == 0 {
+            // e.g., every 1 second if poll is 50ms (adjust as needed)
             stats.sys.refresh_all();
-            stats.cpu_usage = stats.sys.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>()
+            stats.cpu_usage = stats
+                .sys
+                .cpus()
+                .iter()
+                .map(|cpu| cpu.cpu_usage())
+                .sum::<f32>()
                 / stats.sys.cpus().len() as f32;
             stats.memory_usage = stats.sys.used_memory();
             needs_redraw_due_to_stats = true;
@@ -59,7 +65,8 @@ impl StatsUpdater {
                 }
             }
 
-            if update.url.is_empty() { // This signifies a PURE debug log message, no other stats
+            if update.url.is_empty() {
+                // This signifies a PURE debug log message, no other stats
                 continue; // Skip further processing for pure debug messages
             }
 
@@ -86,8 +93,21 @@ impl StatsUpdater {
                 if let Some(network_err) = update.network_error {
                     target_stat.last_network_error = Some(network_err);
                 } else if !update.success {
-                     // Clear error if it was a non-network failure (e.g. HTTP 4xx/5xx)
+                    // Clear error if it was a non-network failure (e.g. HTTP 4xx/5xx)
                     target_stat.last_network_error = None;
+                }
+
+                let total = target_stat.success + target_stat.failure;
+                if total > 0 {
+                    target_stat.error_rate = target_stat.failure as f64 / total as f64;
+                } else {
+                    target_stat.error_rate = 0.0;
+                }
+                // 濒死判定：失败数大于20且成功率低于10%
+                if total > 20 && (target_stat.success as f64 / total as f64) < 0.1 {
+                    target_stat.is_dying = true;
+                } else {
+                    target_stat.is_dying = false;
                 }
             } else {
                 logger.warning(&format!(
@@ -98,7 +118,11 @@ impl StatsUpdater {
 
             // Update per-thread stats
             let now = update.timestamp;
-            match stats.threads.iter_mut().find(|ts| ts.id == update.thread_id) {
+            match stats
+                .threads
+                .iter_mut()
+                .find(|ts| ts.id == update.thread_id)
+            {
                 Some(thread_stat) => {
                     thread_stat.requests += 1;
                     thread_stat.last_active = now;
@@ -123,14 +147,17 @@ impl StatsUpdater {
                 stats.rps_history.pop_front();
             }
 
-            stats.successful_requests_per_second_history.push_back(self.successes_in_last_second);
+            stats
+                .successful_requests_per_second_history
+                .push_back(self.successes_in_last_second);
             if stats.successful_requests_per_second_history.len() > HISTORY_CAPACITY {
                 stats.successful_requests_per_second_history.pop_front();
             }
 
             let current_success_rate = if self.requests_in_last_second > 0 {
                 (self.successes_in_last_second * 100 / self.requests_in_last_second).min(100)
-            } else if stats.total > 0 { // If no requests in last sec, use overall
+            } else if stats.total > 0 {
+                // If no requests in last sec, use overall
                 (stats.success * 100 / stats.total).min(100)
             } else {
                 100 // Default to 100 if no requests at all

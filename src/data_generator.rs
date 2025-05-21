@@ -1,10 +1,11 @@
 use crate::config::loader;
 use crate::logger::Logger;
 use crate::template::render_ast_node;
+use crate::ui::Stats;
 use crate::worker::PreGeneratedRequest;
 
+use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rand::{SeedableRng, seq::IndexedRandom};
 use std::{
     collections::HashMap,
     sync::{
@@ -13,15 +14,18 @@ use std::{
     },
     time::Duration,
 };
+use tokio::sync::Mutex;
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tokio::time::sleep;
 
 pub async fn data_generator_loop(
     generator_id: usize,
     config: loader::AttackConfig,
+    target_ids: Vec<usize>,
     data_pool_tx: mpsc::Sender<PreGeneratedRequest>,
     logger: Logger,
     stop_signal: Arc<AtomicBool>,
+    stats: Arc<Mutex<Stats>>,
 ) {
     logger.info(&format!("Data generator loop {} started.", generator_id));
     let mut rng = StdRng::from_os_rng();
@@ -33,11 +37,50 @@ pub async fn data_generator_loop(
     ));
 
     while !stop_signal.load(Ordering::Relaxed) {
-        let target_config = match config.targets.choose(&mut rng) {
-            Some(t) => t,
+        // 动态读取最新TargetStats
+        let stats_guard = stats.lock().await;
+        let mut my_targets = Vec::new();
+        let mut weights = Vec::new();
+        for t in &config.targets {
+            if !target_ids.contains(&t.id) {
+                continue;
+            }
+            // 查找最新TargetStats
+            if let Some(stat) = stats_guard.targets.iter().find(|s| s.id == t.id) {
+                let weight = if stat.is_dying {
+                    0.01
+                } else if stat.error_rate > 0.5 {
+                    0.1
+                } else if stat.error_rate > 0.2 {
+                    0.3
+                } else {
+                    1.0
+                };
+                my_targets.push(t);
+                weights.push(weight);
+            } else {
+                my_targets.push(t);
+                weights.push(1.0);
+            }
+        }
+        drop(stats_guard);
+        // 按权重随机选择target
+        let total_weight: f64 = weights.iter().sum();
+        let pick = rand::random::<f64>() * total_weight;
+        let mut acc = 0.0;
+        let mut picked = None;
+        for (i, w) in weights.iter().enumerate() {
+            acc += w;
+            if pick <= acc {
+                picked = Some(i);
+                break;
+            }
+        }
+        let target_config = match picked {
+            Some(idx) => my_targets[idx],
             None => {
                 logger.error(&format!(
-                    "Data generator {}: No targets configured. Pausing generation.",
+                    "Data generator {}: No targets available for generation.",
                     generator_id
                 ));
                 sleep(Duration::from_secs(1)).await;

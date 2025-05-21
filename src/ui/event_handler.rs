@@ -4,6 +4,7 @@ use crate::app::App;
 use crate::ui::RunningState;
 use crate::worker::WorkerMessage;
 use crossterm::event::{Event, KeyCode, MouseButton, MouseEventKind};
+use tokio::runtime::Handle;
 
 // Define actions that can result from event handling
 #[derive(Debug, PartialEq, Eq)]
@@ -19,6 +20,12 @@ pub fn handle_event(app: &mut App, event: Event) -> (bool, AppAction) {
     let mut needs_redraw = false;
     let mut app_action = AppAction::NoAction;
 
+    // 预先获取当前状态，避免多次锁定
+    let running_state = {
+        let stats = Handle::current().block_on(app.stats.lock());
+        stats.running_state
+    };
+
     match event {
         Event::Key(key) => {
             needs_redraw = true; // Assume any key press might change state initially
@@ -26,10 +33,10 @@ pub fn handle_event(app: &mut App, event: Event) -> (bool, AppAction) {
                 KeyCode::Char('q') => {
                     app_action = AppAction::Quit;
                 }
-                KeyCode::Char('p') if app.stats.running_state == RunningState::Running => {
+                KeyCode::Char('p') if running_state == RunningState::Running => {
                     app_action = AppAction::Pause;
                 }
-                KeyCode::Char('r') if app.stats.running_state == RunningState::Paused => {
+                KeyCode::Char('r') if running_state == RunningState::Paused => {
                     app_action = AppAction::Resume;
                 }
                 _ => {
@@ -48,13 +55,13 @@ pub fn handle_event(app: &mut App, event: Event) -> (bool, AppAction) {
                         let quit_rect = app.layout_rects.quit_btn;
 
                         if pause_rect.contains(col, row) {
-                            if app.stats.running_state == RunningState::Running {
+                            if running_state == RunningState::Running {
                                 app_action = AppAction::Pause;
                             } else {
                                 needs_redraw = false; // Clicked pause when already paused
                             }
                         } else if resume_rect.contains(col, row) {
-                            if app.stats.running_state == RunningState::Paused {
+                            if running_state == RunningState::Paused {
                                 app_action = AppAction::Resume;
                             } else {
                                 needs_redraw = false; // Clicked resume when already running
@@ -80,11 +87,13 @@ pub fn handle_event(app: &mut App, event: Event) -> (bool, AppAction) {
     // This part is crucial and needs access to app's state and methods
     match app_action {
         AppAction::Pause => {
-            if app.stats.running_state == RunningState::Running {
-                app.stats.running_state = RunningState::Paused;
+            let mut stats = Handle::current().block_on(app.stats.lock());
+            if stats.running_state == RunningState::Running {
+                stats.running_state = RunningState::Paused;
                 app.logger
                     .info("Pausing workers and data generator (event)...");
-                app.data_generator_stop_signal.store(true, Ordering::Relaxed);
+                app.data_generator_stop_signal
+                    .store(true, Ordering::Relaxed);
                 if let Err(e) = app.control_tx.send(WorkerMessage::Pause) {
                     app.logger
                         .warning(&format!("Failed to broadcast Pause message: {}", e));
@@ -92,21 +101,25 @@ pub fn handle_event(app: &mut App, event: Event) -> (bool, AppAction) {
             }
         }
         AppAction::Resume => {
-            if app.stats.running_state == RunningState::Paused {
-                app.stats.running_state = RunningState::Running;
+            let mut stats = Handle::current().block_on(app.stats.lock());
+            let need_spawn = stats.running_state == RunningState::Paused
+                && app.data_generator_handles.is_empty();
+            if stats.running_state == RunningState::Paused {
+                stats.running_state = RunningState::Running;
                 app.logger
                     .info("Resuming workers and data generator (event)...");
-                // 如果数据生成器被停止，我们需要重新启动它们
-                app.data_generator_stop_signal.store(false, Ordering::Relaxed);
-                // 如果没有正在运行的数据生成器，则重新生成它们
-                if app.data_generator_handles.is_empty() {
-                    app.logger.info("Data generators were stopped, respawning...");
-                    app.spawn_data_generators();
-                }
-                if let Err(e) = app.control_tx.send(WorkerMessage::Resume) {
-                    app.logger
-                        .warning(&format!("Failed to broadcast Resume message: {}", e));
-                }
+                app.data_generator_stop_signal
+                    .store(false, Ordering::Relaxed);
+            }
+            drop(stats);
+            if need_spawn {
+                app.logger
+                    .info("Data generators were stopped, respawning...");
+                app.spawn_data_generators();
+            }
+            if let Err(e) = app.control_tx.send(WorkerMessage::Resume) {
+                app.logger
+                    .warning(&format!("Failed to broadcast Resume message: {}", e));
             }
         }
         AppAction::Quit => {

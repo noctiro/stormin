@@ -1,5 +1,12 @@
+pub mod cli;
 pub mod event_handler;
 pub mod stats_updater;
+use crate::app::App;
+use crossterm::{
+    event::{self, DisableMouseCapture},
+    execute,
+    terminal::{LeaveAlternateScreen, disable_raw_mode},
+};
 use ratatui::{
     prelude::*,
     symbols,
@@ -9,8 +16,10 @@ use ratatui::{
     },
 };
 use std::collections::VecDeque;
+use std::error::Error;
 use std::{thread, time::Instant};
 use sysinfo::System;
+use tokio::time::sleep;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RunningState {
@@ -33,6 +42,8 @@ pub struct TargetStats {
     pub last_success_time: Option<Instant>,
     pub last_failure_time: Option<Instant>,
     pub last_network_error: Option<String>, // 存储最后的网络错误信息
+    pub is_dying: bool,                     // 新增字段，标记是否为濒死
+    pub error_rate: f64,                    // 新增字段，动态错误率
 }
 
 #[derive(Clone, Debug)]
@@ -341,9 +352,9 @@ pub fn draw_ui<B: Backend>(
         let total_mem = stats.sys.total_memory() as f64;
         let used_mem = stats.memory_usage as f64;
         let memory_ratio = match (total_mem, used_mem) {
-            (t, _) if t <= 0.0 => 0.0, // 防止除零
+            (t, _) if t <= 0.0 => 0.0,                 // 防止除零
             (t, u) if u.is_nan() || t.is_nan() => 0.0, // 处理NaN
-            (t, u) => (u / t).clamp(0.0, 1.0)
+            (t, u) => (u / t).clamp(0.0, 1.0),
         };
         let memory_gauge = LineGauge::default()
             .block(
@@ -876,4 +887,101 @@ pub fn draw_ui<B: Backend>(
     })?;
 
     Ok(layout_rects)
+}
+
+pub async fn run_tui(app: &mut App) -> Result<(), Box<dyn Error>> {
+    app.logger.info("Starting TUI application loop.");
+    let mut last_draw_time = Instant::now();
+    let redraw_interval = std::time::Duration::from_millis(100);
+    let mut needs_redraw = true;
+
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, std::sync::atomic::Ordering::SeqCst);
+    })?;
+
+    let terminal = app
+        .terminal
+        .as_mut()
+        .ok_or("Terminal not initialized for TUI mode")?;
+
+    // 首次绘制
+    {
+        let stats_guard = app.stats.lock().await;
+        let all_rects = draw_ui(terminal, &*stats_guard)?;
+        drop(stats_guard);
+        app.update_layout_rects(all_rects);
+    }
+
+    if !app.config.start_paused {
+        app.spawn_data_generators();
+    }
+
+    while running.load(std::sync::atomic::Ordering::SeqCst) {
+        let mut received_input_or_event = false;
+        if event::poll(std::time::Duration::from_millis(50))? {
+            received_input_or_event = true;
+            let event_read = event::read()?;
+            let (redraw_from_event, app_action) =
+                crate::ui::event_handler::handle_event(app, event_read);
+            needs_redraw = redraw_from_event || needs_redraw;
+
+            match app_action {
+                crate::ui::event_handler::AppAction::Quit => {
+                    app.logger.info(
+                        "Quit action received. Signaling workers to stop and exiting immediately.",
+                    );
+                    let _ = app.control_tx.send(crate::worker::WorkerMessage::Stop);
+                    if let Some(terminal) = app.terminal.as_mut() {
+                        let _ = execute!(
+                            terminal.backend_mut(),
+                            LeaveAlternateScreen,
+                            DisableMouseCapture
+                        );
+                        let _ = terminal.show_cursor();
+                    }
+                    let _ = disable_raw_mode();
+                    app.logger
+                        .info("Exiting application now via std::process::exit(0).");
+                    std::process::exit(0);
+                }
+                _ => {}
+            }
+        }
+
+        if !received_input_or_event {
+            let mut stats_guard = app.stats.lock().await;
+            let stats_updated = app.stats_updater.update_stats(
+                &mut *stats_guard,
+                &mut app.target_stats_rx,
+                &app.logger,
+            );
+            drop(stats_guard);
+            if stats_updated {
+                needs_redraw = true;
+            }
+        }
+
+        // 只在主循环外部调用可变self方法，避免借用冲突
+        if needs_redraw || last_draw_time.elapsed() >= redraw_interval {
+            let terminal_mut = app
+                .terminal
+                .as_mut()
+                .ok_or("Terminal not available for TUI draw")?;
+            let stats_guard = app.stats.lock().await;
+            let all_rects = draw_ui(terminal_mut, &*stats_guard)?;
+            drop(stats_guard);
+            app.update_layout_rects(all_rects);
+            last_draw_time = Instant::now();
+            needs_redraw = false;
+        }
+
+        app.manage_data_generator().await;
+
+        if !received_input_or_event && !needs_redraw {
+            sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+    Ok(())
 }
