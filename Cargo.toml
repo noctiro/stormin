@@ -1,6 +1,6 @@
 [package]
 name = "stormin"
-version = "0.0.5"
+version = "0.0.6"
 license = "MIT"
 edition = "2024"
 
@@ -19,6 +19,8 @@ tokio = { version = "1", features = ["full"] }
 pest = "2.7"
 pest_derive = "2.7"
 chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6.1.0"
+futures = "0.3.31"
 
 [profile.release]
 opt-level = "z"

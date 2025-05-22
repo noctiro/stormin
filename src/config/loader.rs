@@ -156,7 +156,7 @@ impl ProxyConfig {
 pub struct AttackConfig {
     pub threads: usize,
     pub generator_threads: usize,
-    pub timeout: u64,
+    pub timeout: Duration,
     pub targets: Vec<CompiledTarget>,
     pub proxies: Vec<ProxyConfig>,
     // 数据生成器默认配置
@@ -549,7 +549,7 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
 
     Ok(AttackConfig {
         threads,
-        timeout,
+        timeout: Duration::from_secs(timeout),
         targets: compiled,
         proxies,
         generator_threads,

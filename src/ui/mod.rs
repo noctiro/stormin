@@ -56,9 +56,9 @@ pub struct DebugInfo {
 pub struct Stats {
     pub targets: Vec<TargetStats>,
     pub threads: Vec<ThreadStats>,
-    pub success: u64,
-    pub failure: u64,
-    pub total: u64,
+    pub success: std::sync::atomic::AtomicU64,
+    pub failure: std::sync::atomic::AtomicU64,
+    pub total: std::sync::atomic::AtomicU64,
     pub start_time: Instant,
     pub last_success_time: Option<Instant>,
     pub last_failure_time: Option<Instant>,
@@ -72,6 +72,18 @@ pub struct Stats {
     pub rps_history: VecDeque<u64>, // History of requests per second for sparkline
     pub successful_requests_per_second_history: VecDeque<u64>, // History of successful requests per second
     pub success_rate_history: VecDeque<u64>, // History of success rate for sparkline
+}
+
+impl Stats {
+    pub fn get_success(&self) -> u64 {
+        self.success.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    pub fn get_failure(&self) -> u64 {
+        self.failure.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    pub fn get_total(&self) -> u64 {
+        self.total.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 // Structure to hold all relevant layout rectangles
@@ -386,8 +398,8 @@ pub fn draw_ui<B: Backend>(
 
         // 添加请求速率统计
         let elapsed_secs = stats.start_time.elapsed().as_secs() as f64;
-        let req_per_sec = if elapsed_secs > 0.0 && stats.total > 0 {
-            (stats.total as f64 / elapsed_secs).max(0.0) // 确保非负
+        let req_per_sec = if elapsed_secs > 0.0 && stats.get_total() > 0 {
+            (stats.get_total() as f64 / elapsed_secs).max(0.0) // 确保非负
         } else {
             0.0
         };
@@ -395,7 +407,7 @@ pub fn draw_ui<B: Backend>(
         let total = Paragraph::new(vec![Line::from(vec![
             Span::styled("Total: ", Style::default().fg(Color::Gray)),
             Span::styled(
-                format!("{} ({:.1}/s)", stats.total, req_per_sec),
+                format!("{} ({:.1}/s)", stats.get_total(), req_per_sec),
                 Style::default()
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
@@ -417,7 +429,7 @@ pub fn draw_ui<B: Backend>(
         let success = Paragraph::new(vec![Line::from(vec![
             Span::styled("Count: ", Style::default().fg(Color::Gray)),
             Span::styled(
-                stats.success.to_string(),
+                stats.get_success().to_string(),
                 Style::default()
                     .fg(Color::LightGreen)
                     .add_modifier(Modifier::BOLD),
@@ -449,7 +461,7 @@ pub fn draw_ui<B: Backend>(
         let failure = Paragraph::new(vec![Line::from(vec![
             Span::styled("Count: ", Style::default().fg(Color::Gray)),
             Span::styled(
-                stats.failure.to_string(),
+                stats.get_failure().to_string(),
                 Style::default()
                     .fg(Color::LightRed)
                     .add_modifier(Modifier::BOLD),
@@ -640,8 +652,9 @@ pub fn draw_ui<B: Backend>(
         f.render_widget(requests_by_target_widget, chart_area);
 
         // 成功率进度条
-        let success_rate = if stats.total > 0 {
-            let rate = (stats.success as f64 / stats.total as f64 * 100.0).clamp(0.0, 100.0);
+        let success_rate = if stats.get_total() > 0 {
+            let rate =
+                (stats.get_success() as f64 / stats.get_total() as f64 * 100.0).clamp(0.0, 100.0);
             rate as u16
         } else {
             0
@@ -923,8 +936,13 @@ pub async fn run_tui(app: &mut App) -> Result<(), Box<dyn Error>> {
         if event::poll(std::time::Duration::from_millis(50))? {
             received_input_or_event = true;
             let event_read = event::read()?;
+            // 获取当前 running_state 传递给 handle_event
+            let running_state = {
+                let stats_guard = app.stats.lock().await;
+                stats_guard.running_state
+            };
             let (redraw_from_event, app_action) =
-                crate::ui::event_handler::handle_event(app, event_read);
+                crate::ui::event_handler::handle_event(app, event_read, running_state);
             needs_redraw = redraw_from_event || needs_redraw;
 
             match app_action {

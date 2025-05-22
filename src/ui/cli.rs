@@ -64,9 +64,9 @@ pub async fn run_cli(app: &mut App) -> Result<(), Box<dyn Error>> {
             );
             println!(
                 "Total: {}, Success: {}, Failure: {}, RPS: {}",
-                stats.total,
-                stats.success,
-                stats.failure,
+                stats.get_total(),
+                stats.get_success(),
+                stats.get_failure(),
                 stats.rps_history.back().copied().unwrap_or(0u64)
             );
             for target_stat in &stats.targets {
@@ -101,9 +101,9 @@ pub async fn run_cli(app: &mut App) -> Result<(), Box<dyn Error>> {
     );
     println!(
         "Total: {}, Success: {}, Failure: {}, RPS: {}",
-        stats.total,
-        stats.success,
-        stats.failure,
+        stats.get_total(),
+        stats.get_success(),
+        stats.get_failure(),
         stats.rps_history.back().copied().unwrap_or(0u64)
     );
     for target_stat in &stats.targets {

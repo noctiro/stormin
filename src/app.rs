@@ -28,6 +28,7 @@ use tokio::runtime::Handle;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
+use dashmap::DashMap;
 
 pub struct App {
     pub config: loader::AttackConfig,
@@ -94,9 +95,9 @@ impl App {
                 })
                 .collect(),
             threads: Vec::new(), // This might be unused now or could represent something else
-            success: 0,
-            failure: 0,
-            total: 0,
+            success: std::sync::atomic::AtomicU64::new(0),
+            failure: std::sync::atomic::AtomicU64::new(0),
+            total: std::sync::atomic::AtomicU64::new(0),
             start_time: Instant::now(),
             last_success_time: None,
             last_failure_time: None,
@@ -133,7 +134,7 @@ impl App {
         }) // App::new's Ok block ends here
     } // App::new method ends here
 
-    // spawn_data_generators is defined *after* App::new
+    // 优化数据生成器启动方法
     pub fn spawn_data_generators(&mut self) {
         let generator_threads = self.config.generator_threads;
         self.logger.info(&format!(
@@ -141,20 +142,23 @@ impl App {
             generator_threads
         ));
 
+        // 优化池大小计算，使用更明确的公式
         let pool_size = self.config.threads * 50;
         let (data_pool_tx, data_pool_rx) = mpsc::channel(pool_size);
         self.data_pool_tx = Some(data_pool_tx);
-        self.data_pool_rx = Some(Arc::new(TokioMutex::new(data_pool_rx))); // Use TokioMutex
+        self.data_pool_rx = Some(Arc::new(TokioMutex::new(data_pool_rx)));
 
         self.data_generator_stop_signal
             .store(false, Ordering::SeqCst);
 
-        // 均分targets
-        let mut target_chunks: Vec<Vec<usize>> = vec![Vec::new(); generator_threads];
+        // 使用更高效的目标分配算法
+        let targets_per_generator = (self.config.targets.len() + generator_threads - 1) / generator_threads;
+        let mut target_chunks: Vec<Vec<usize>> = vec![Vec::with_capacity(targets_per_generator); generator_threads];
+        
         for (i, t) in self.config.targets.iter().enumerate() {
             target_chunks[i % generator_threads].push(t.id);
         }
-
+        
         for i in 0..generator_threads {
             let cfg = self.config.clone();
             let pool_tx_clone = self
@@ -183,31 +187,37 @@ impl App {
         }
     }
 
+    // 优化工作线程启动方法
     pub fn spawn_workers(&mut self) {
+        let thread_count = self.config.threads;
         self.logger.info(&format!(
             "Spawning {} worker threads...",
-            self.config.threads
+            thread_count
         ));
-        for _i in 0..self.config.threads {
+        
+        for i in 0..thread_count {
             let control_rx = self.control_tx.subscribe();
             let data_pool_rx_clone = self
                 .data_pool_rx
                 .clone()
                 .expect("Data pool receiver should be initialized before spawning workers");
+            
             let cfg = self.config.clone();
             let worker_logger = self.logger.clone();
             let stats_tx = self.target_stats_tx.clone();
+            
             let handle = tokio::spawn(async move {
                 worker_loop(
                     control_rx,
                     data_pool_rx_clone,
                     cfg,
                     std::thread::current().id(),
-                    worker_logger.clone(),
+                    worker_logger,
                     stats_tx,
                 )
                 .await;
             });
+            
             self.worker_handles.push(handle);
         }
     }
@@ -278,49 +288,63 @@ impl App {
         Ok(())
     }
 
+    // 优化应用程序关闭方法
     async fn shutdown_components(&mut self) {
-        Handle::current().block_on(self.stats.lock()).running_state = RunningState::Stopping;
+        // 设置状态
+        {
+            let mut stats = self.stats.lock().await;
+            stats.running_state = RunningState::Stopping;
+        }
+        
         self.logger.info("Shutting down application components...");
 
+        // 发送停止信号
         self.logger.info("Sending global stop signal to workers...");
         let _ = self.control_tx.send(WorkerMessage::Stop);
-
+        
+        // 通知数据生成器停止
         self.logger.info("Signaling data generators to stop...");
-        self.data_generator_stop_signal
-            .store(true, Ordering::SeqCst);
+        self.data_generator_stop_signal.store(true, Ordering::SeqCst);
+        
+        // 释放发送者资源
         if self.data_pool_tx.is_some() {
             self.data_pool_tx.take();
-            self.logger
-                .info("Data pool sender dropped during shutdown.");
+            self.logger.info("Data pool sender dropped during shutdown.");
         }
-
-        self.logger
-            .info("Waiting for data generator tasks to finish...");
-        for (i, handle) in self.data_generator_handles.drain(..).enumerate() {
-            self.logger
-                .info(&format!("Waiting for data generator task {}...", i));
-            if let Err(e) = handle.await {
-                self.logger
-                    .error(&format!("Data generator task {} panicked: {:?}", i, e));
+        
+        // 并行等待数据生成器完成
+        if !self.data_generator_handles.is_empty() {
+            self.logger.info("Waiting for data generator tasks to finish...");
+            let handles = std::mem::take(&mut self.data_generator_handles);
+            let results = futures::future::join_all(handles).await;
+            
+            let success_count = results.iter().filter(|r| r.is_ok()).count();
+            let error_count = results.len() - success_count;
+            
+            if error_count > 0 {
+                self.logger.warning(&format!("{} data generator tasks completed successfully, {} tasks panicked",
+                    success_count, error_count));
             } else {
-                self.logger
-                    .info(&format!("Data generator task {} finished.", i));
+                self.logger.info("All data generator tasks finished successfully.");
             }
         }
-        self.logger.info("All data generator tasks finished.");
-
-        self.logger.info("Waiting for worker tasks to finish...");
-        for (i, handle) in self.worker_handles.drain(..).enumerate() {
-            self.logger
-                .info(&format!("Waiting for worker task {}...", i));
-            if let Err(e) = handle.await {
-                self.logger
-                    .error(&format!("Worker task {} panicked: {:?}", i, e));
+        
+        // 并行等待工作线程完成
+        if !self.worker_handles.is_empty() {
+            self.logger.info("Waiting for worker tasks to finish...");
+            let handles = std::mem::take(&mut self.worker_handles);
+            let results = futures::future::join_all(handles).await;
+            
+            let success_count = results.iter().filter(|r| r.is_ok()).count();
+            let error_count = results.len() - success_count;
+            
+            if error_count > 0 {
+                self.logger.warning(&format!("{} worker tasks completed successfully, {} tasks panicked",
+                    success_count, error_count));
             } else {
-                self.logger.info(&format!("Worker task {} finished.", i));
+                self.logger.info("All worker tasks finished successfully.");
             }
         }
-        self.logger.info("All worker tasks finished.");
 
         if !self.cli_mode {
             self.logger
