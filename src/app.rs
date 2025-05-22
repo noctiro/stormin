@@ -24,11 +24,9 @@ use std::{
     time::{Duration, Instant},
 };
 use sysinfo::System;
-use tokio::runtime::Handle;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
-use dashmap::DashMap;
 
 pub struct App {
     pub config: loader::AttackConfig,
@@ -195,7 +193,7 @@ impl App {
             thread_count
         ));
         
-        for i in 0..thread_count {
+        for _i in 0..thread_count {
             let control_rx = self.control_tx.subscribe();
             let data_pool_rx_clone = self
                 .data_pool_rx

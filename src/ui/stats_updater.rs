@@ -216,14 +216,14 @@ impl StatsUpdater {
                         let idx_value = *idx.value();
                         if idx_value < stats.targets.len() {
                             target_indices.push((id, idx_value));
-                        } else if let Some((success, failure, url, _, _, _)) = target_updates.get(&id) {
+                        } else if let Some((_success, _failure, url, _, _, _)) = target_updates.get(&id) {
                             let warning_msg = format!(
                                 "StatsUpdater: Received update for unknown target ID: {} for URL: {}",
                                 id, url
                             );
                             logger.warning(&warning_msg);
                         }
-                    } else if let Some((success, failure, url, _, _, _)) = target_updates.get(&id) {
+                    } else if let Some((_success, _failure, url, _, _, _)) = target_updates.get(&id) {
                         let warning_msg = format!(
                             "StatsUpdater: Received update for unknown target ID: {} for URL: {}",
                             id, url

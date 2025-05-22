@@ -193,7 +193,7 @@ pub async fn data_generator_loop(
                         // 重置退避计数
                         backoff_count = 0;
                     }
-                    Err(TrySendError::Full(req)) => {
+                    Err(TrySendError::Full(_req)) => {
                         backoff_count += 1;
                         
                         // 指数退避策略
