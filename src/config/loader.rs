@@ -51,7 +51,8 @@ pub struct RawConfig {
     pub start_paused: Option<bool>,            // Start in paused state
     pub run_duration: Option<String>,          // e.g., "10m", "1h30m", "30s"
     #[serde(rename = "Target")]
-    pub targets: Vec<RawTarget>,
+    pub targets: Option<Vec<RawTarget>>,
+    pub target_subscriptions: Option<Vec<String>>, // 支持从远程加载配置
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -338,19 +339,54 @@ fn parse_duration_str(duration_str: &str) -> Result<Duration, ConfigError> {
     Ok(Duration::from_secs(total_secs))
 }
 
+async fn fetch_targets_from_urls(urls: &[String]) -> Result<Vec<RawTarget>, Box<dyn Error>> {
+    let mut targets = Vec::new();
+
+    #[derive(Deserialize)]
+    struct RemoteTargetTable {
+        #[serde(rename = "Target")]
+        targets: Option<Vec<RawTarget>>,
+    }
+
+    for url in urls {
+        let response = reqwest::get(url).await?.text().await?;
+        let remote: RemoteTargetTable = toml::from_str(&response)?;
+        if let Some(remote_targets) = remote.targets {
+            for target in remote_targets {
+                if let Err(e) = super::validator::validate_target(&target) {
+                    eprintln!("Skipping invalid target from {}: {}", url, e);
+                    continue;
+                }
+                targets.push(target);
+            }
+        }
+    }
+
+    Ok(targets)
+}
+
 /// Loads configuration and compiles all targets
-pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error>> {
+pub async fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error>> {
     let content = fs::read_to_string(path)?;
-    let raw: RawConfig = toml::from_str(&content)?;
+    let mut raw: RawConfig = toml::from_str(&content)?;
+
+    let mut all_targets: Vec<RawTarget> = Vec::new();
+    if let Some(local_targets) = raw.targets.take() {
+        all_targets.extend(local_targets);
+    }
+    if let Some(urls) = &raw.target_subscriptions {
+        let remote_targets = fetch_targets_from_urls(urls).await?;
+        all_targets.extend(remote_targets);
+    }
+
+    if all_targets.is_empty() {
+        return Err(ConfigError::NoTargets.into());
+    }
 
     super::validator::validate_rate_control_config(&raw)
         .map_err(|e| Box::new(e) as Box<dyn Error>)?;
 
     let builtin_functions = crate::template::get_builtin_function_names();
-
-    if raw.targets.is_empty() {
-        return Err(ConfigError::NoTargets.into());
-    }
 
     let mut proxies = Vec::new();
     if let Some(proxy_path_str) = &raw.proxy_file {
@@ -412,7 +448,7 @@ pub fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error
 
     let mut compiled: Vec<CompiledTarget> = Vec::new();
     let mut target_id_counter = 0;
-    'target_loop: for raw_t in raw.targets {
+    'target_loop: for raw_t in all_targets {
         if let Err(e) = super::validator::validate_target(&raw_t) {
             eprintln!(
                 "[Configuration verification failed] Target '{}' was removed: {}",

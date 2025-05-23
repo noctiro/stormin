@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .map(|arg| arg.trim_start_matches("--config=").to_string())
         .unwrap_or_else(|| "config.toml".to_string());
 
-    let mut app = match App::new(&config_path, cli_mode) {
+    let mut app = match App::new(&config_path, cli_mode).await {
         Ok(app) => app,
         Err(e) => {
             eprintln!("Failed to initialize application: {}", e);
