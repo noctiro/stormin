@@ -3,8 +3,8 @@
 # threads = 64
 # 生成线程数，一般1就够用
 # generator_threads = 1
-# 代理文件路径 (如果文件不存在或为空，则不使用代理)
-# proxy_file = "proxy.txt"
+# 代理路径 (如果不存在或为空，则不使用代理)
+# proxy = "proxy.txt"
 # 超时时间，单位秒
 # timeout = 5
 

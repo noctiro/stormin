@@ -22,7 +22,7 @@ Stormin 是一个拥有 TUI 界面的注册轰炸机，专门用于整治盗号�
 # --- 基础配置项 (可选) ---
 threads = 64                       # 线程数 (可选，默认为 CPU 核数 * 16 )
 generator_threads = 1              # 生成线程数，一般1就够用 (可选)
-proxy_file = "proxies.txt"         # 代理文件路径（可选）
+proxy_file = "proxies.txt"         # 代理路径，支持在线代理文件和本地文件，支持数组写法（可选）
 timeout = 5                        # 超时时间，单位秒 (可选，默认 5 秒)
 cli_update_interval_secs = 1       # CLI模式下的统计信息更新间隔（秒）（可选）
 start_paused = false               # 是否以暂停状态启动（可选，默认 false）
@@ -35,7 +35,7 @@ initial_delay_micros = 5000      # 初始生成延迟，默认5000微秒(5ms)
 increase_factor = 1.2            # 延迟增加因子，默认1.2(每次增加20%)
 decrease_factor = 0.85           # 延迟减少因子，默认0.85(每次减少15%)
 
-# --- 攻击目标配置 ---
+# --- 攻击目标配置（必填） ---
 
 target_subscriptions = [ "http://example1.com/example.toml", "http://example2.com/example.toml" ] # 远程Target配置，支持多个订阅源 (可选)
 

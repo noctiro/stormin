@@ -1,7 +1,7 @@
 use std::collections::HashSet;
-use std::fmt; // Import HashSet
+use std::fmt;
 
-use super::loader::{Rule, TemplateAstNode}; // Import TemplateAstNode
+use super::loader::{Rule, TemplateAstNode};
 
 /// Configuration validation error type
 #[derive(Debug)]

@@ -1,9 +1,11 @@
+use super::proxy::{ProxyConfig, ProxyFileSource};
+use super::validator::ConfigError;
 use pest::Parser;
 use pest_derive::Parser;
+use reqwest::Url;
 use serde::Deserialize;
+use std::path::Path;
 use std::{error::Error, fs, num::NonZeroUsize, time::Duration};
-
-use super::validator::ConfigError;
 
 // --- Pest Parser Setup ---
 
@@ -34,7 +36,7 @@ pub struct RawConfig {
     pub threads: Option<usize>,           // 攻击线程数
     pub generator_threads: Option<usize>, // 数据生成器线程数
     pub timeout: Option<u64>,
-    pub proxy_file: Option<String>,
+    pub proxy: Option<ProxyFileSource>,
     // 新增的动态速率配置项
     pub target_rps: Option<f64>,
     pub min_success_rate: Option<f64>,            // 0.0 to 1.0
@@ -61,96 +63,6 @@ pub struct RawTarget {
     pub method: Option<String>,
     pub headers: Option<std::collections::HashMap<String, String>>,
     pub params: Option<std::collections::HashMap<String, String>>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ProxyConfig {
-    pub scheme: String,
-    pub host: String,
-    pub port: u16,
-    pub username: Option<String>,
-    pub password: Option<String>,
-    pub raw: String, // 原始代理字符串，便于 fallback
-}
-
-impl ProxyConfig {
-    pub fn parse(line: &str) -> Result<Self, ConfigError> {
-        let line = line.trim();
-        if line.is_empty() {
-            return Err(ConfigError::ProxyParseError("Empty proxy line".into()));
-        }
-
-        // First try to parse as full URL format
-        if let Ok(url) = url::Url::parse(line) {
-            let scheme = url.scheme().to_string();
-            let host = url
-                .host_str()
-                .ok_or_else(|| {
-                    ConfigError::ProxyParseError(format!("Missing host in proxy URL: {}", line))
-                })?
-                .to_string();
-            let port = url.port_or_known_default().ok_or_else(|| {
-                ConfigError::ProxyParseError(format!("Missing port in proxy URL: {}", line))
-            })?;
-            let username = if !url.username().is_empty() {
-                Some(url.username().to_string())
-            } else {
-                None
-            };
-            let password = url.password().map(|s| s.to_string());
-            return Ok(ProxyConfig {
-                scheme,
-                host,
-                port,
-                username,
-                password,
-                raw: line.to_string(),
-            });
-        }
-
-        // 处理简单格式: [user:pass@]host:port
-        let (auth, host_port) = if let Some(at_pos) = line.find('@') {
-            let auth_part = &line[..at_pos];
-            let host_port_part = &line[at_pos + 1..];
-            let auth_parts: Vec<&str> = auth_part.split(':').collect();
-            if auth_parts.len() != 2 {
-                (None, line)
-            } else {
-                (Some((auth_parts[0], auth_parts[1])), host_port_part)
-            }
-        } else {
-            (None, line)
-        };
-
-        let host_port_parts: Vec<&str> = host_port.split(':').collect();
-        if host_port_parts.len() != 2 {
-            return Err(ConfigError::ProxyParseError(format!(
-                "Invalid host:port format in proxy: {}",
-                host_port
-            )));
-        }
-
-        let host = host_port_parts[0].to_string();
-        let port: u16 = host_port_parts[1].parse().map_err(|e| {
-            ConfigError::ProxyParseError(format!(
-                "Invalid port '{}' in proxy: {}",
-                host_port_parts[1], e
-            ))
-        })?;
-        let (username, password) = match auth {
-            Some((user, pass)) => (Some(user.to_string()), Some(pass.to_string())),
-            None => (None, None),
-        };
-
-        Ok(ProxyConfig {
-            scheme: "http".to_string(), // 默认使用HTTP协议
-            host,
-            port,
-            username,
-            password,
-            raw: line.to_string(),
-        })
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -389,26 +301,40 @@ pub async fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn
     let builtin_functions = crate::template::get_builtin_function_names();
 
     let mut proxies = Vec::new();
-    if let Some(proxy_path_str) = &raw.proxy_file {
-        if !proxy_path_str.trim().is_empty() {
-            let proxy_path = std::path::Path::new(proxy_path_str);
-            if proxy_path.exists() {
-                let proxy_content = fs::read_to_string(proxy_path)?;
-                for line in proxy_content.lines() {
-                    let line = line.trim();
-                    if line.is_empty() || line.starts_with('#') {
-                        continue;
-                    }
-                    match ProxyConfig::parse(line) {
-                        Ok(proxy) => proxies.push(proxy),
-                        Err(e) => eprintln!("Invalid proxy configuration '{}': {}", line, e),
-                    }
+    if let Some(proxy_sources) = &raw.proxy {
+        for source in proxy_sources.iter() {
+            let is_url = Url::parse(source).is_ok();
+            let content_result = if is_url {
+                // 在线URL (async)
+                match reqwest::get(source).await {
+                    Ok(resp) => resp.text().await.map_err(|e| e.to_string()),
+                    Err(e) => Err(e.to_string()),
                 }
             } else {
-                eprintln!(
-                    "Warning: proxy_file '{}' not found, ignoring.",
-                    proxy_path_str
-                );
+                // 本地文件
+                let path = Path::new(source);
+                if path.exists() {
+                    std::fs::read_to_string(path).map_err(|e| e.to_string())
+                } else {
+                    Err(format!("proxy '{}' not found, ignoring.", source))
+                }
+            };
+            match content_result {
+                Ok(proxy_content) => {
+                    for line in proxy_content.lines() {
+                        let line = line.trim();
+                        if line.is_empty() || line.starts_with('#') {
+                            continue;
+                        }
+                        match ProxyConfig::parse(line) {
+                            Ok(proxy) => proxies.push(proxy),
+                            Err(e) => eprintln!("Invalid proxy configuration '{}': {}", line, e),
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to load proxy source '{}': {}", source, e);
+                }
             }
         }
     }
