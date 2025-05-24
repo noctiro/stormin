@@ -219,9 +219,31 @@ pub async fn worker_loop(
                             Ok(response) => {
                                 let success_status = response.status().is_success();
                                 let status = response.status();
-                                (success_status, Some(status), None)
+                                if !success_status {
+                                    let err_msg = format!(
+                                        "HTTP {} {}",
+                                        status.as_u16(),
+                                        status.canonical_reason().unwrap_or("Unknown")
+                                    );
+                                    (false, Some(status), Some(err_msg))
+                                } else {
+                                    (true, Some(status), None)
+                                }
                             }
-                            Err(e) => (false, None, Some(e.to_string())),
+                            Err(e) => {
+                                let err_msg = if e.is_timeout() {
+                                    "Timeout".to_string()
+                                } else if e.is_connect() {
+                                    "Connection Failed".to_string()
+                                } else if e.is_request() {
+                                    format!("Request Error: {}", e)
+                                } else if e.is_status() {
+                                    format!("HTTP Error: {}", e)
+                                } else {
+                                    format!("Other Error: {}", e)
+                                };
+                                (false, None, Some(err_msg))
+                            }
                         };
 
                         // 使用预分配容量构建消息，减少内存分配
