@@ -67,25 +67,14 @@ pub async fn worker_loop(
 
     let client = match proxy_config {
         Some(proxy) => {
-            let proxy_url = if let (Some(user), Some(pass)) = (&proxy.username, &proxy.password) {
-                format!(
-                    "{}://{}:{}@{}:{}",
-                    proxy.scheme, user, pass, proxy.host, proxy.port
-                )
-            } else {
-                format!("{}://{}:{}", proxy.scheme, proxy.host, proxy.port)
-            };
-            match reqwest::Proxy::all(&proxy_url) {
+            match reqwest::Proxy::all(proxy.to_url_string()) {
                 Ok(reqwest_proxy) => client_builder.proxy(reqwest_proxy).build(),
                 Err(e) => {
                     logger.error(&format!(
                         "Worker {:?}: Failed to create proxy object from {}, falling back: {}",
                         thread_id, proxy.raw, e
                     ));
-                    Client::builder()
-                        .pool_max_idle_per_host(10)
-                        .tcp_keepalive(Some(Duration::from_secs(30)))
-                        .build()
+                    client_builder.build()
                 }
             }
         }
@@ -281,7 +270,7 @@ pub async fn worker_loop(
                         
                         // 发送状态更新
                         if stats_tx.send(update).await.is_err() {
-                            logger.warning(&format!("Worker {:?}: Failed to send stats update. UI channel closed.", thread_id));
+                            logger.info(&format!("Worker {:?}: Stats channel closed, exiting.", thread_id));
                             break 'main_loop;
                         }
                     }

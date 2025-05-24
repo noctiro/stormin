@@ -37,6 +37,8 @@ pub struct RawConfig {
     pub generator_threads: Option<usize>, // 数据生成器线程数
     pub timeout: Option<u64>,
     pub proxy: Option<ProxyFileSource>,
+    /// 代理允许的最大延迟（毫秒），默认500ms
+    pub max_proxy_latency_ms: Option<u64>,
     // 新增的动态速率配置项
     pub target_rps: Option<f64>,
     pub min_success_rate: Option<f64>,            // 0.0 to 1.0
@@ -277,21 +279,27 @@ async fn fetch_targets_from_urls(urls: &[String]) -> Result<Vec<RawTarget>, Box<
     Ok(targets)
 }
 
-/// Loads configuration and compiles all targets
-pub async fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn Error>> {
+pub async fn load_config_and_compile(
+    path: &str,
+    logger: &crate::logger::Logger,
+) -> Result<AttackConfig, Box<dyn Error>> {
+    logger.info(&format!("Loading config from {}...", path));
     let content = fs::read_to_string(path)?;
     let mut raw: RawConfig = toml::from_str(&content)?;
+    logger.info("Config file loaded. Parsing targets...");
 
     let mut all_targets: Vec<RawTarget> = Vec::new();
     if let Some(local_targets) = raw.targets.take() {
         all_targets.extend(local_targets);
     }
     if let Some(urls) = &raw.target_subscriptions {
+        logger.info("Fetching remote targets...");
         let remote_targets = fetch_targets_from_urls(urls).await?;
         all_targets.extend(remote_targets);
     }
 
     if all_targets.is_empty() {
+        logger.error("No targets found in config.");
         return Err(ConfigError::NoTargets.into());
     }
 
@@ -299,41 +307,99 @@ pub async fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn
         .map_err(|e| Box::new(e) as Box<dyn Error>)?;
 
     let builtin_functions = crate::template::get_builtin_function_names();
-
+    let max_proxy_latency_ms = raw.max_proxy_latency_ms.unwrap_or(500);
     let mut proxies = Vec::new();
     if let Some(proxy_sources) = &raw.proxy {
         for source in proxy_sources.iter() {
             let is_url = Url::parse(source).is_ok();
             let content_result = if is_url {
-                // 在线URL (async)
+                logger.info(&format!("Downloading proxy list from {}...", source));
                 match reqwest::get(source).await {
                     Ok(resp) => resp.text().await.map_err(|e| e.to_string()),
                     Err(e) => Err(e.to_string()),
                 }
             } else {
-                // 本地文件
                 let path = Path::new(source);
                 if path.exists() {
+                    logger.info(&format!("Loading proxy list from file {}...", source));
                     std::fs::read_to_string(path).map_err(|e| e.to_string())
                 } else {
+                    logger.warning(&format!("proxy '{}' not found, ignoring.", source));
                     Err(format!("proxy '{}' not found, ignoring.", source))
                 }
             };
             match content_result {
                 Ok(proxy_content) => {
-                    for line in proxy_content.lines() {
+                    let mut parsed: Vec<ProxyConfig> = Vec::new();
+                    for (idx, line) in proxy_content.lines().enumerate() {
                         let line = line.trim();
                         if line.is_empty() || line.starts_with('#') {
                             continue;
                         }
                         match ProxyConfig::parse(line) {
-                            Ok(proxy) => proxies.push(proxy),
-                            Err(e) => eprintln!("Invalid proxy configuration '{}': {}", line, e),
+                            Ok(proxy) => parsed.push(proxy),
+                            Err(e) => logger.warning(&format!(
+                                "Invalid proxy config at line {}: {}",
+                                idx + 1,
+                                e
+                            )),
                         }
                     }
+                    logger.info(&format!(
+                        "Testing {} proxies for latency <= {}ms...",
+                        parsed.len(),
+                        max_proxy_latency_ms
+                    ));
+                    use futures::stream::{FuturesUnordered, StreamExt};
+                    let mut futs = FuturesUnordered::new();
+                    for (i, proxy) in parsed.into_iter().enumerate() {
+                        let logger = logger.clone();
+                        futs.push(async move {
+                            logger.info(&format!("[Proxy {}] Testing {}...", i + 1, proxy.raw));
+                            match proxy.test_latency(max_proxy_latency_ms).await {
+                                Ok(ms) => {
+                                    logger.info(&format!(
+                                        "[Proxy {}] {} latency: {}ms",
+                                        i + 1,
+                                        proxy.raw,
+                                        ms
+                                    ));
+                                    if ms <= max_proxy_latency_ms as u128 {
+                                        Some(proxy)
+                                    } else {
+                                        logger.warning(&format!(
+                                            "[Proxy {}] {} latency {}ms exceeds limit, skipped.",
+                                            i + 1,
+                                            proxy.raw,
+                                            ms
+                                        ));
+                                        None
+                                    }
+                                }
+                                Err(err) => {
+                                    logger.warning(&format!(
+                                        "[Proxy {}] {} test failed: {}",
+                                        i + 1,
+                                        proxy.raw,
+                                        err
+                                    ));
+                                    None
+                                }
+                            }
+                        });
+                    }
+                    while let Some(res) = futs.next().await {
+                        if let Some(proxy) = res {
+                            proxies.push(proxy);
+                        }
+                    }
+                    logger.info(&format!(
+                        "Proxy latency test complete. {} proxies available.",
+                        proxies.len()
+                    ));
                 }
                 Err(e) => {
-                    eprintln!("Warning: failed to load proxy source '{}': {}", source, e);
+                    logger.warning(&format!("Failed to load proxy source '{}': {}", source, e));
                 }
             }
         }
@@ -342,6 +408,7 @@ pub async fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn
     // 计算线程数，默认是系统可用线程数 * 16
     let threads = if let Some(t) = raw.threads {
         if t < 1 {
+            logger.error("Thread count must be at least 1");
             return Err(ConfigError::InvalidThreadCount.into());
         }
         t
@@ -351,43 +418,39 @@ pub async fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn
             .get()
             * 16
     };
-
-    // 计算数据生成器线程数，默认是 threads/512，最小为 1
     let generator_threads = match raw.generator_threads {
         Some(g) => {
             if g < 1 {
+                logger.error("Generator thread count must be at least 1");
                 return Err(ConfigError::InvalidGeneratorThreadCount.into());
             }
             g
         }
         None => (threads / 512).max(1),
     };
-
     let timeout = if let Some(t) = raw.timeout {
         if t <= 0 {
+            logger.error("Timeout must be a positive number");
             return Err(ConfigError::InvalidTimeoutValue.into());
         }
         t
     } else {
-        5 // Default timeout 5 seconds
+        5
     };
-
     let mut compiled: Vec<CompiledTarget> = Vec::new();
     let mut target_id_counter = 0;
     'target_loop: for raw_t in all_targets {
         if let Err(e) = super::validator::validate_target(&raw_t) {
-            eprintln!(
+            logger.warning(&format!(
                 "[Configuration verification failed] Target '{}' was removed: {}",
                 raw_t.url, e
-            );
+            ));
             continue;
         }
-
         let mut parsed_params = Vec::new();
         let mut parsed_headers = Vec::new();
         let mut all_parsed_templates: Vec<(String, TemplateAstNode)> = Vec::new();
         let mut target_has_error = false;
-
         if let Some(map) = raw_t.params {
             for (k, v) in map {
                 match parse_template_string(&v) {
@@ -396,10 +459,7 @@ pub async fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn
                         all_parsed_templates.push((k.clone(), ast_node));
                     }
                     Err(e) => {
-                        eprintln!(
-                            "[Configuration verification failed] Target '{}', Param '{}': Failed to parse template: {}",
-                            raw_t.url, k, e
-                        );
+                        logger.warning(&format!("[Configuration verification failed] Target '{}', Param '{}': Failed to parse template: {}", raw_t.url, k, e));
                         target_has_error = true;
                         break;
                     }
@@ -407,13 +467,9 @@ pub async fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn
             }
         }
         if target_has_error {
-            eprintln!(
-                "[Configuration verification failed] Skipping Target '{}' due to param parsing errors.",
-                raw_t.url
-            );
+            logger.warning(&format!("[Configuration verification failed] Skipping Target '{}' due to param parsing errors.", raw_t.url));
             continue 'target_loop;
         }
-
         if let Some(map) = raw_t.headers {
             for (k, v) in map {
                 match parse_template_string(&v) {
@@ -422,10 +478,7 @@ pub async fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn
                         all_parsed_templates.push((k.clone(), ast_node));
                     }
                     Err(e) => {
-                        eprintln!(
-                            "[Configuration verification failed] Target '{}', Header '{}': Failed to parse template: {}",
-                            raw_t.url, k, e
-                        );
+                        logger.warning(&format!("[Configuration verification failed] Target '{}', Header '{}': Failed to parse template: {}", raw_t.url, k, e));
                         target_has_error = true;
                         break;
                     }
@@ -433,36 +486,26 @@ pub async fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn
             }
         }
         if target_has_error {
-            eprintln!(
-                "[Configuration verification failed] Skipping Target '{}' due to header parsing errors.",
-                raw_t.url
-            );
+            logger.warning(&format!("[Configuration verification failed] Skipping Target '{}' due to header parsing errors.", raw_t.url));
             continue 'target_loop;
         }
-
         all_parsed_templates.sort_by_key(|(_, node)| match node {
             TemplateAstNode::FunctionCall { def_name, .. } if def_name.is_some() => 0,
             _ => 1,
         });
-
         if let Err(e) =
             super::validator::validate_target_templates(&all_parsed_templates, &builtin_functions)
         {
-            eprintln!(
+            logger.warning(&format!(
                 "[Configuration verification failed] Target '{}': {}",
                 raw_t.url, e
-            );
+            ));
             target_has_error = true;
         }
-
         if target_has_error {
-            eprintln!(
-                "[Configuration verification failed] Skipping Target '{}' due to template validation errors.",
-                raw_t.url
-            );
+            logger.warning(&format!("[Configuration verification failed] Skipping Target '{}' due to template validation errors.", raw_t.url));
             continue 'target_loop;
         }
-
         let method = match raw_t
             .method
             .as_deref()
@@ -479,14 +522,13 @@ pub async fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn
             "PATCH" => reqwest::Method::PATCH,
             "TRACE" => reqwest::Method::TRACE,
             m => {
-                eprintln!(
+                logger.warning(&format!(
                     "Skipping invalid target '{}': Invalid HTTP method {}",
                     raw_t.url, m
-                );
+                ));
                 continue;
             }
         };
-
         compiled.push(CompiledTarget {
             id: target_id_counter,
             url: raw_t.url,
@@ -496,30 +538,31 @@ pub async fn load_config_and_compile(path: &str) -> Result<AttackConfig, Box<dyn
         });
         target_id_counter += 1;
     }
-
     if compiled.is_empty() {
+        logger.error("No valid targets after parsing.");
         return Err(ConfigError::NoTargets.into());
     }
-
     let run_duration = match raw.run_duration {
         Some(duration_str) => match parse_duration_str(&duration_str) {
             Ok(d) => d,
-            Err(e) => return Err(Box::new(e) as Box<dyn Error>),
+            Err(e) => {
+                logger.error(&format!("Invalid run_duration: {}", e));
+                return Err(Box::new(e) as Box<dyn Error>);
+            }
         },
         None => Duration::from_secs(0),
     };
-
     Ok(AttackConfig {
         threads,
         timeout: Duration::from_secs(timeout),
         targets: compiled,
         proxies,
         generator_threads,
-        min_delay_micros: raw.min_delay_micros.unwrap_or(1000), // 默认1ms最小延迟
-        max_delay_micros: raw.max_delay_micros.unwrap_or(100_000), // 默认100ms最大延迟
-        initial_delay_micros: raw.initial_delay_micros.unwrap_or(5000), // 默认5ms初始延迟
-        increase_factor: raw.increase_factor.unwrap_or(1.2),    // 默认20%增长
-        decrease_factor: raw.decrease_factor.unwrap_or(0.85),   // 默认15%减少
+        min_delay_micros: raw.min_delay_micros.unwrap_or(1000),
+        max_delay_micros: raw.max_delay_micros.unwrap_or(100_000),
+        initial_delay_micros: raw.initial_delay_micros.unwrap_or(5000),
+        increase_factor: raw.increase_factor.unwrap_or(1.2),
+        decrease_factor: raw.decrease_factor.unwrap_or(0.85),
         cli_update_interval_secs: raw.cli_update_interval_secs.unwrap_or(2),
         start_paused: raw.start_paused.unwrap_or(false),
         run_duration,

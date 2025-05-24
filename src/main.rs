@@ -29,11 +29,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 // Attempt to disable raw mode if it was enabled (only in TUI mode)
                 let _ = crossterm::terminal::disable_raw_mode();
                 // Attempt to leave alternate screen if entered (only in TUI mode)
-                let _ = crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+                let _ =
+                    crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen);
             }
             return Err(e);
         }
-    };    // Spawn background threads
+    }; // Spawn background threads
+
     if !cli_mode {
         app.spawn_log_receiver(); // Log receiver is TUI specific
     }
@@ -52,19 +54,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
             eprintln!("Error during pre-shutdown cleanup: {}", cleanup_err);
             // If run_result was also an error, prioritize returning the run_result error.
             // Otherwise, return the cleanup error.
-            return run_result.map_err(|run_e| {
-                eprintln!("Original application runtime error: {}", run_e);
-                run_e // return original error
-            }).and_then(|_| Err(cleanup_err)); // if run_result was Ok, return cleanup_err
+            return run_result
+                .map_err(|run_e| {
+                    eprintln!("Original application runtime error: {}", run_e);
+                    run_e // return original error
+                })
+                .and_then(|_| Err(cleanup_err)); // if run_result was Ok, return cleanup_err
         } else {
-             eprintln!("Terminal restored successfully.");
+            eprintln!("Terminal restored successfully.");
         }
     }
-
+    // 打印最终统计信息
+    if cli_mode || run_result.is_ok() {
+        app.print_final_stats().await;
+    }
 
     if let Err(e) = &run_result {
         eprintln!("Application runtime error: {}", e);
     }
-    
+
     run_result
 }

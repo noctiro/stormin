@@ -8,7 +8,8 @@ pub async fn run_cli(app: &mut App) -> Result<(), Box<dyn Error>> {
     let r = running.clone();
     ctrlc::set_handler(move || {
         r.store(false, std::sync::atomic::Ordering::SeqCst);
-        println!("\nCtrl-C received, initiating shutdown...");
+        // Using standard logger instead of println
+        eprintln!("\nCtrl-C received, initiating shutdown...");
     })?;
 
     let print_interval = std::time::Duration::from_secs(app.config.cli_update_interval_secs);
@@ -43,7 +44,6 @@ pub async fn run_cli(app: &mut App) -> Result<(), Box<dyn Error>> {
         drop(stats_guard);
 
         app.manage_data_generator().await;
-
         if last_print_time.elapsed() >= print_interval {
             let stats_guard = app.stats.lock().await;
             let stats = &*stats_guard;
@@ -57,25 +57,26 @@ pub async fn run_cli(app: &mut App) -> Result<(), Box<dyn Error>> {
             } else {
                 String::new()
             };
-            println!(
-                "{} ----- Stats ----- {}",
-                chrono::Utc::now().to_rfc3339(),
-                remaining_time
-            );
-            println!(
+            let stats_message = format!("----- Stats ----- {}", remaining_time);
+            app.logger.info(&stats_message);
+
+            let summary_message = format!(
                 "Total: {}, Success: {}, Failure: {}, RPS: {}",
                 stats.get_total(),
                 stats.get_success(),
                 stats.get_failure(),
                 stats.rps_history.back().copied().unwrap_or(0u64)
             );
+            app.logger.info(&summary_message);
+
             for target_stat in &stats.targets {
-                println!(
+                let target_message = format!(
                     "  Target {}: Success: {}, Failure: {}",
                     target_stat.id, target_stat.success, target_stat.failure
                 );
+                app.logger.info(&target_message);
             }
-            println!("--------------------");
+            app.logger.info("--------------------");
             last_print_time = std::time::Instant::now();
         }
 
@@ -94,24 +95,25 @@ pub async fn run_cli(app: &mut App) -> Result<(), Box<dyn Error>> {
     } else {
         String::new()
     };
-    println!(
-        "{} ----- Stats ----- {}",
-        chrono::Utc::now().to_rfc3339(),
-        remaining_time
-    );
-    println!(
+    let stats_message = format!("----- Stats ----- {}", remaining_time);
+    app.logger.info(&stats_message);
+
+    let summary_message = format!(
         "Total: {}, Success: {}, Failure: {}, RPS: {}",
         stats.get_total(),
         stats.get_success(),
         stats.get_failure(),
         stats.rps_history.back().copied().unwrap_or(0u64)
     );
+    app.logger.info(&summary_message);
+
     for target_stat in &stats.targets {
-        println!(
+        let target_message = format!(
             "  Target {}: Success: {}, Failure: {}",
             target_stat.id, target_stat.success, target_stat.failure
         );
+        app.logger.info(&target_message);
     }
-    println!("--------------------");
+    app.logger.info("--------------------");
     Ok(())
 }

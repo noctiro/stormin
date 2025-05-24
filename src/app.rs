@@ -1,4 +1,4 @@
-use crate::config::loader::{self, load_config_and_compile};
+use crate::config::loader;
 use crate::data_generator;
 use crate::logger::Logger;
 use crate::ui::stats_updater::StatsUpdater;
@@ -24,7 +24,6 @@ use std::{
     time::{Duration, Instant},
 };
 use sysinfo::System;
-use tokio::runtime::Handle;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -50,33 +49,43 @@ pub struct App {
 }
 
 impl App {
+    /// 设置终端 UI 相关资源
+    fn setup_terminal() -> Result<
+        (Terminal<CrosstermBackend<Stdout>>, std_mpsc::Sender<DebugInfo>, std_mpsc::Receiver<DebugInfo>),
+        Box<dyn Error>,
+    > {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
+        terminal.clear()?;
+
+        let (tx, rx) = std_mpsc::channel();
+        Ok((terminal, tx, rx))
+    }
+
     pub async fn new(config_path: &str, cli_mode: bool) -> Result<Self, Box<dyn Error>> {
-        let config = load_config_and_compile(config_path).await?;
+        // 1. CLI模式下，直接用CLI logger，TUI模式下先用临时CLI logger加载配置
+        let temp_logger = Logger::new(None, true);
+        let config = loader::load_config_and_compile(config_path, &temp_logger).await?;
 
-        let mut terminal = None;
-        let mut log_rx = None;
-        let log_tx_for_logger;
-
-        if !cli_mode {
-            enable_raw_mode()?;
-            let mut stdout = io::stdout();
-            execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-            let backend = CrosstermBackend::new(stdout);
-            let mut term_instance = Terminal::new(backend)?;
-            term_instance.clear()?;
-            terminal = Some(term_instance);
-
-            let (tx, rx) = std_mpsc::channel();
-            log_tx_for_logger = Some(tx);
-            log_rx = Some(rx);
+        // 2. 初始化UI资源和TUI日志通道
+        let (terminal, tx, log_rx) = if !cli_mode {
+            let (t, tx, rx) = Self::setup_terminal()?;
+            (Some(t), Some(tx), Some(rx))
         } else {
-            log_tx_for_logger = None;
-        }
+            (None, None, None)
+        };
 
+        // 3. 创建最终logger（TUI模式用tx，CLI模式tx为None）
+        let logger = Logger::new(tx, cli_mode);
+
+        // 4. 初始化通道
         let (control_tx, _) = broadcast::channel(128);
         let (target_stats_tx, target_stats_rx) = mpsc::channel(256);
-        let logger = Logger::new(log_tx_for_logger, cli_mode);
 
+        // 5. 初始化统计信息
         let stats = Arc::new(TokioMutex::new(Stats {
             targets: config
                 .targets
@@ -93,7 +102,7 @@ impl App {
                     error_rate: 0.0,
                 })
                 .collect(),
-            threads: Vec::new(), // This might be unused now or could represent something else
+            threads: Vec::new(),
             success: std::sync::atomic::AtomicU64::new(0),
             failure: std::sync::atomic::AtomicU64::new(0),
             total: std::sync::atomic::AtomicU64::new(0),
@@ -112,7 +121,6 @@ impl App {
         }));
 
         Ok(App {
-            // App::new's Ok block starts here
             config,
             stats,
             logger,
@@ -123,14 +131,14 @@ impl App {
             target_stats_tx,
             target_stats_rx,
             log_rx,
-            worker_handles: Vec::new(), // Correctly initialize worker_handles
+            worker_handles: Vec::new(),
             data_generator_handles: Vec::new(),
             data_generator_stop_signal: Arc::new(AtomicBool::new(false)),
             log_receiver_handle: None,
             layout_rects: LayoutRects::default(),
             stats_updater: StatsUpdater::new(),
             cli_mode,
-        }) // App::new's Ok block ends here
+        })
     } // App::new method ends here
 
     // spawn_data_generators is defined *after* App::new
@@ -279,48 +287,48 @@ impl App {
     }
 
     async fn shutdown_components(&mut self) {
-        Handle::current().block_on(self.stats.lock()).running_state = RunningState::Stopping;
-        self.logger.info("Shutting down application components...");
+        self.logger.info("Shutdown initiated..."); // 1. 设置状态为停止中并让统计接收端立即停止工作
+        {
+            let mut stats = self.stats.lock().await;
+            stats.running_state = RunningState::Stopping;
+        }
+        // 立即消耗掉接收端，这样发送端会立即收到错误而不是等待
+        let rx = std::mem::replace(&mut self.target_stats_rx, mpsc::channel(1).1);
+        drop(rx); // 显式丢弃接收端
 
-        self.logger.info("Sending global stop signal to workers...");
-        let _ = self.control_tx.send(WorkerMessage::Stop);
-
-        self.logger.info("Signaling data generators to stop...");
+        // 2. 停止数据生成器
         self.data_generator_stop_signal
             .store(true, Ordering::SeqCst);
-        if self.data_pool_tx.is_some() {
-            self.data_pool_tx.take();
-            self.logger
-                .info("Data pool sender dropped during shutdown.");
-        }
+        self.data_pool_tx.take(); // 移除发送端来强制所有接收端关闭
 
+        // 3. 通知工作线程停止
+        self.logger.info("Sending stop signal to all workers...");
+        let _ = self.control_tx.send(WorkerMessage::Stop);
+
+        // 4. 使用 tokio::time::timeout 来限制等待时间
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        // 等待数据生成器，但限制时间为1秒
         self.logger
-            .info("Waiting for data generator tasks to finish...");
-        for (i, handle) in self.data_generator_handles.drain(..).enumerate() {
-            self.logger
-                .info(&format!("Waiting for data generator task {}...", i));
-            if let Err(e) = handle.await {
-                self.logger
-                    .error(&format!("Data generator task {} panicked: {:?}", i, e));
-            } else {
-                self.logger
-                    .info(&format!("Data generator task {} finished.", i));
-            }
-        }
-        self.logger.info("All data generator tasks finished.");
+            .info("Waiting for data generators to stop (max 1s)...");
+        let gen_handles = std::mem::take(&mut self.data_generator_handles);
+        let _ = timeout(
+            Duration::from_secs(1),
+            futures::future::join_all(gen_handles),
+        )
+        .await;
 
-        self.logger.info("Waiting for worker tasks to finish...");
-        for (i, handle) in self.worker_handles.drain(..).enumerate() {
-            self.logger
-                .info(&format!("Waiting for worker task {}...", i));
-            if let Err(e) = handle.await {
-                self.logger
-                    .error(&format!("Worker task {} panicked: {:?}", i, e));
-            } else {
-                self.logger.info(&format!("Worker task {} finished.", i));
-            }
-        }
-        self.logger.info("All worker tasks finished.");
+        // 等待工作线程，但限制时间为1秒
+        self.logger.info("Waiting for workers to stop (max 1s)...");
+        let worker_handles = std::mem::take(&mut self.worker_handles);
+        let _ = timeout(
+            Duration::from_secs(1),
+            futures::future::join_all(worker_handles),
+        )
+        .await;
+
+        self.logger.info("Fast shutdown completed.");
 
         if !self.cli_mode {
             self.logger
@@ -406,6 +414,44 @@ impl App {
                 self.data_generator_stop_signal
                     .store(true, Ordering::SeqCst);
             }
+        }
+    }
+
+    pub async fn print_final_stats(&self) {
+        // 从原子计数器中获取总请求数
+        let stats_guard = self.stats.lock().await;
+        let total = stats_guard.total.load(Ordering::Relaxed);
+        let success = stats_guard.success.load(Ordering::Relaxed);
+        let failure = stats_guard.failure.load(Ordering::Relaxed);
+        let success_rate = if total > 0 {
+            (success as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        };
+        println!("\nAttack Statistics Report:");
+        println!("----------------------");
+        println!("Total Requests: {}", total);
+        println!("Successful: {}", success);
+        println!("Failed: {}", failure);
+        println!("Success Rate: {:.2}%", success_rate);
+
+        // Print detailed statistics for each target
+        println!("\nDetailed Target Statistics:");
+        println!("-------------------------");
+        for target in &stats_guard.targets {
+            let target_success_rate = if target.success + target.failure > 0 {
+                (target.success as f64 / (target.success + target.failure) as f64) * 100.0
+            } else {
+                0.0
+            };
+            println!("Target [{}]:", target.url);
+            println!("  Successful: {}", target.success);
+            println!("  Failed: {}", target.failure);
+            println!("  Success Rate: {:.2}%", target_success_rate);
+            if let Some(err) = &target.last_network_error {
+                println!("  Last Error: {}", err);
+            }
+            println!();
         }
     }
 }

@@ -1,15 +1,14 @@
+use reqwest::Proxy;
 use serde::Deserialize;
+use tokio::time::{Duration as TokioDuration, timeout};
 
 use super::validator::ConfigError;
 
 #[derive(Clone, Debug)]
 pub struct ProxyConfig {
     pub scheme: String,
-    pub host: String,
-    pub port: u16,
-    pub username: Option<String>,
-    pub password: Option<String>,
-    pub raw: String, // 原始代理字符串，便于 fallback
+    pub raw: String,        // 原始代理字符串，便于 fallback
+    pub url_string: String, // 标准化代理URL字符串
 }
 
 impl ProxyConfig {
@@ -37,13 +36,16 @@ impl ProxyConfig {
                 None
             };
             let password = url.password().map(|s| s.to_string());
+            let url_string = match (&username, &password) {
+                (Some(user), Some(pass)) => {
+                    format!("{}://{}:{}@{}:{}", scheme, user, pass, host, port)
+                }
+                _ => format!("{}://{}:{}", scheme, host, port),
+            };
             return Ok(ProxyConfig {
                 scheme,
-                host,
-                port,
-                username,
-                password,
                 raw: line.to_string(),
+                url_string,
             });
         }
 
@@ -80,15 +82,66 @@ impl ProxyConfig {
             Some((user, pass)) => (Some(user.to_string()), Some(pass.to_string())),
             None => (None, None),
         };
-
+        let scheme = "http".to_string(); // 默认使用HTTP协议
+        let url_string = match (&username, &password) {
+            (Some(user), Some(pass)) => format!("{}://{}:{}@{}:{}", scheme, user, pass, host, port),
+            _ => format!("{}://{}:{}", scheme, host, port),
+        };
         Ok(ProxyConfig {
-            scheme: "http".to_string(), // 默认使用HTTP协议
-            host,
-            port,
-            username,
-            password,
+            scheme,
             raw: line.to_string(),
+            url_string,
         })
+    }
+
+    /// 返回标准代理URL字符串，parse时已生成，直接返回
+    pub fn to_url_string(&self) -> &str {
+        &self.url_string
+    }
+
+    /// 测试该代理的延迟，返回毫秒和详细错误。超时或失败返回Err(String)。
+    pub async fn test_latency(&self, max_latency_ms: u64) -> Result<u128, String> {
+        let timeout_duration = TokioDuration::from_millis(max_latency_ms);
+        let proxy_url = self.to_url_string().to_string();
+        let proxy = Proxy::all(proxy_url).map_err(|e| format!("Proxy::all error: {e}"))?;
+        let client = reqwest::Client::builder()
+            .proxy(proxy)
+            .timeout(timeout_duration)
+            .pool_max_idle_per_host(0)
+            .build()
+            .map_err(|e| format!("Client build error: {e}"))?;
+
+        let test_url = match self.scheme.as_str() {
+            "https" => "https://cp.cloudflare.com/generate_204",
+            _ => "http://cp.cloudflare.com/generate_204",
+        };
+        let start = std::time::Instant::now();
+        // 优先用 HEAD，失败再用 GET
+        let fut = client
+            .head(test_url)
+            .header("User-Agent", "stormin")
+            .send();
+        let head_result = match timeout(timeout_duration, fut).await {
+            Ok(Ok(resp)) if resp.status().is_success() || resp.status().is_redirection() => {
+                return Ok(start.elapsed().as_millis());
+            }
+            Ok(Ok(resp)) => Err(format!("HTTP status error: {}", resp.status())),
+            Ok(Err(_)) => Err("HEAD request failed".to_string()),
+            Err(_) => Err("Timeout on HEAD request".to_string()),
+        };
+        // HEAD 失败或超时，降级为 GET
+        let fut = client
+            .get(test_url)
+            .header("User-Agent", "stormin")
+            .send();
+        match timeout(timeout_duration, fut).await {
+            Ok(Ok(resp)) if resp.status().is_success() || resp.status().is_redirection() => {
+                Ok(start.elapsed().as_millis())
+            }
+            Ok(Ok(resp)) => Err(format!("HTTP status error: {}", resp.status())),
+            Ok(Err(_)) => Err("GET request failed".to_string()),
+            Err(_) => head_result, // 返回HEAD的错误信息
+        }
     }
 }
 

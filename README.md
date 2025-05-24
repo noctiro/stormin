@@ -22,11 +22,13 @@ Stormin 是一个拥有 TUI 界面的注册轰炸机，专门用于整治盗号�
 # --- 基础配置项 (可选) ---
 threads = 64                       # 线程数 (可选，默认为 CPU 核数 * 16 )
 generator_threads = 1              # 生成线程数，一般1就够用 (可选)
-proxy_file = "proxies.txt"         # 代理路径，支持在线代理文件和本地文件，支持数组写法（可选）
 timeout = 5                        # 超时时间，单位秒 (可选，默认 5 秒)
 cli_update_interval_secs = 1       # CLI模式下的统计信息更新间隔（秒）（可选）
 start_paused = false               # 是否以暂停状态启动（可选，默认 false）
 run_duration = "30m"               # 运行持续时间（可选，如 "10s", "5m", "1h"）
+
+proxy = "proxies.txt"              # 代理路径，支持在线代理文件和本地文件，支持数组写法 ["", "", ""]（可选）
+max_proxy_latency_ms = 500         # 代理过滤的最大延迟 (可选，默认 500 毫秒)
 
 # --- 数据生成速率配置 (可选) ---
 min_delay_micros = 1000          # 最小生成延迟，默认1000微秒(1ms)
