@@ -237,30 +237,24 @@ impl StatsUpdater {
             for (id, idx_value) in target_indices {
                 if let Some((success, failure, _, success_time, failure_time, network_error)) = target_updates.get(&id) {
                     let target_stat = &mut stats.targets[idx_value];
-                    
                     target_stat.success += success;
                     target_stat.failure += failure;
-                    
                     if let Some(time) = success_time {
                         target_stat.last_success_time = Some(*time);
                     }
-                    
                     if let Some(time) = failure_time {
                         target_stat.last_failure_time = Some(*time);
                     }
-                    
                     if let Some(err) = network_error {
                         target_stat.last_network_error = Some(err.clone());
                     } else if *failure > 0 && target_stat.last_network_error.is_some() {
                         // 只在非网络错误时清除
                         target_stat.last_network_error = None;
                     }
-                    
-                    // 更新错误率和濒死状态
+                    // 更新错误率
                     let total = target_stat.success + target_stat.failure;
                     if total > 0 {
                         target_stat.error_rate = target_stat.failure as f64 / total as f64;
-                        target_stat.is_dying = total > 20 && (target_stat.success as f64 / total as f64) < 0.1;
                     }
                 }
             }

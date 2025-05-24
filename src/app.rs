@@ -98,7 +98,6 @@ impl App {
                     last_success_time: None,
                     last_failure_time: None,
                     last_network_error: None,
-                    is_dying: false,
                     error_rate: 0.0,
                 })
                 .collect(),

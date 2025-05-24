@@ -68,9 +68,9 @@ pub async fn data_generator_loop(
             let stats_guard = stats.lock().await;
             for target in &my_target_configs {
                 if let Some(stat) = stats_guard.targets.iter().find(|s| s.id == target.id) {
-                    target_stats_cache.insert(target.id, (stat.is_dying, stat.error_rate));
+                    target_stats_cache.insert(target.id, stat.error_rate);
                 } else {
-                    target_stats_cache.insert(target.id, (false, 0.0));
+                    target_stats_cache.insert(target.id, 0.0);
                 }
             }
             last_stats_refresh = Instant::now();
@@ -79,24 +79,46 @@ pub async fn data_generator_loop(
 
         // 使用缓存计算权重和选择目标
         let mut targets_with_weights = Vec::with_capacity(my_target_configs.len());
-        
-        for target in &my_target_configs {
-            let (is_dying, error_rate) = target_stats_cache
-                .get(&target.id)
-                .map(|entry| *entry.value())
-                .unwrap_or((false, 0.0));
-            
-            let weight = if is_dying {
-                0.03
-            } else if error_rate > 0.5 {
-                0.1
-            } else if error_rate > 0.2 {
-                0.3
-            } else {
-                1.0
-            };
-            
-            targets_with_weights.push((target, weight));
+        {
+            // 获取 stats_guard 以便读取最新的目标统计
+            let stats_guard = stats.lock().await;
+            for target in &my_target_configs {
+                // 查找目标统计
+                let stat = stats_guard.targets.iter().find(|s| s.id == target.id);
+                let (failure, success, error_rate, last_network_error) = if let Some(stat) = stat {
+                    (stat.failure, stat.success, stat.error_rate, stat.last_network_error.as_ref())
+                } else {
+                    (0, 0, 0.0, None)
+                };
+
+                // weight 计算逻辑：
+                // 1. 错误率高，weight 低
+                // 2. 失败数远大于成功数，weight 低
+                // 3. 有网络错误，weight 进一步降低
+                let mut weight = 1.0;
+                if error_rate > 0.8 {
+                    weight = 0.05;
+                } else if error_rate > 0.5 {
+                    weight = 0.15;
+                } else if error_rate > 0.2 {
+                    weight = 0.5;
+                } else if error_rate > 0.05 {
+                    weight = 0.8;
+                }
+                if failure > success * 2 && failure > 20 {
+                    weight *= 0.5;
+                }
+                if let Some(err) = last_network_error {
+                    if !err.is_empty() {
+                        weight *= 0.3;
+                    }
+                }
+                // 保证 weight 不为负
+                if weight < 0.01 {
+                    weight = 0.01;
+                }
+                targets_with_weights.push((target, weight));
+            }
         }
         // 使用加权随机选择
         let target_config = if targets_with_weights.is_empty() {

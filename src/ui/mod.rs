@@ -42,8 +42,7 @@ pub struct TargetStats {
     pub last_success_time: Option<Instant>,
     pub last_failure_time: Option<Instant>,
     pub last_network_error: Option<String>, // 存储最后的网络错误信息
-    pub is_dying: bool,                     // 新增字段，标记是否为濒死
-    pub error_rate: f64,                    // 新增字段，动态错误率
+    pub error_rate: f64,                    // 动态错误率
 }
 
 #[derive(Clone, Debug)]
