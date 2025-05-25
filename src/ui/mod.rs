@@ -97,6 +97,18 @@ pub struct LayoutRects {
     pub title_bar: Rect,
 }
 
+fn format_elapsed(secs: f64) -> String {
+    if secs < 60.0 {
+        format!("{:.1}s ago", secs)
+    } else if secs < 3600.0 {
+        format!("{:.1}m ago", secs / 60.0)
+    } else if secs < 86400.0 {
+        format!("{:.1}h ago", secs / 3600.0)
+    } else {
+        format!("{:.1}d ago", secs / 86400.0)
+    }
+}
+
 pub fn draw_ui<B: Backend>(
     terminal: &mut Terminal<B>,
     stats: &Stats,
@@ -835,11 +847,11 @@ pub fn draw_ui<B: Backend>(
                 };
                 let last_success_str = t
                     .last_success_time
-                    .map(|time| format!("{:.1}s ago", time.elapsed().as_secs_f64()))
+                    .map(|time| format_elapsed(time.elapsed().as_secs_f64()))
                     .unwrap_or_else(|| "N/A".to_string());
                 let last_failure_str = t
                     .last_failure_time
-                    .map(|time| format!("{:.1}s ago", time.elapsed().as_secs_f64()))
+                    .map(|time| format_elapsed(time.elapsed().as_secs_f64()))
                     .unwrap_or_else(|| "N/A".to_string());
                 let rps_val = if let Some(_last_success_time) = t.last_success_time {
                     let elapsed_secs = stats.start_time.elapsed().as_secs_f64();
