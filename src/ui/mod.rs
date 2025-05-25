@@ -773,6 +773,19 @@ pub fn draw_ui<B: Backend>(
             )));
         }
 
+        // Compute pagination for thread activity:
+        let visible_thread_lines = layout_rects.threads.height.saturating_sub(2); // account for borders
+        let total_thread_lines = lines.len() as u16;
+        let thread_scroll = if total_thread_lines > visible_thread_lines {
+            total_thread_lines - visible_thread_lines
+        } else {
+            0
+        };
+        let thread_offset = if thread_scroll > 0 {
+            (stats.start_time.elapsed().as_secs() as u16) % (thread_scroll + 1)
+        } else {
+            0
+        };
         let thread_paragraph = Paragraph::new(lines)
             .block(
                 Block::default()
@@ -786,8 +799,8 @@ pub fn draw_ui<B: Backend>(
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::DarkGray)),
             )
-            .wrap(Wrap { trim: true }); // Trim lines if they exceed paragraph width
-
+            .wrap(Wrap { trim: true })
+            .scroll((thread_offset, 0)); // Apply dynamic scroll offset
         f.render_widget(thread_paragraph, layout_rects.threads);
 
         // Target状态 - Table
@@ -864,16 +877,32 @@ pub fn draw_ui<B: Backend>(
             })
             .collect();
 
-        let target_rows_iter: Vec<Row> = target_rows; // Ensure type is explicit for Table::new
-        let target_table_widget = Table::new(target_rows_iter)
+        // Compute visible rows based on available height:
+        let target_area = chunks[7]; // Target状态 area
+        layout_rects.targets = target_area;
+        let visible_target_rows = {
+            let avail = target_area.height.saturating_sub(3) as usize; // 1 for header + padding
+            if target_rows.len() > avail {
+                let offset = (stats.start_time.elapsed().as_secs() as usize)
+                    % (target_rows.len() - avail + 1);
+                target_rows
+                    .into_iter()
+                    .skip(offset)
+                    .take(avail)
+                    .collect::<Vec<Row>>()
+            } else {
+                target_rows
+            }
+        };
+        let target_table_widget = Table::new(visible_target_rows)
             .widths(&[
-                Constraint::Percentage(28), // URL (Min width, can expand)
-                Constraint::Length(8),      // S/F
-                Constraint::Length(8),      // Rate
-                Constraint::Length(7),      // RPS
-                Constraint::Length(12),     // Last OK
-                Constraint::Length(12),     // Last Fail
-                Constraint::Percentage(15), // Error (Takes remaining flexible space)
+                Constraint::Percentage(34), // URL
+                Constraint::Percentage(16), // S/F
+                Constraint::Percentage(6), // Rate
+                Constraint::Percentage(5), // RPS
+                Constraint::Percentage(8), // Last OK
+                Constraint::Percentage(8), // Last Fail
+                Constraint::Percentage(23), // Error
             ])
             .header(target_header)
             .block(
@@ -888,9 +917,7 @@ pub fn draw_ui<B: Backend>(
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::DarkGray)),
             );
-
         let mut target_table_state = TableState::default();
-        layout_rects.targets = chunks[7]; // Restored index to 7
         f.render_stateful_widget(
             target_table_widget,
             layout_rects.targets,
