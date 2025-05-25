@@ -24,6 +24,8 @@ pub enum ConfigError {
     InvalidRpsAdjustFactor(String),
     InvalidSuccessRatePenaltyFactor(String),
     InvalidDurationFormat(String), // Added for run_duration parsing
+    // New error variant for delay configuration errors
+    InvalidDelayValue(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -83,6 +85,7 @@ impl fmt::Display for ConfigError {
                     e
                 )
             }
+            ConfigError::InvalidDelayValue(msg) => write!(f, "Invalid delay value: {}", msg),
         }
     }
 }
@@ -276,68 +279,62 @@ fn validate_references_and_cycles(
 pub fn validate_rate_control_config(
     raw_config: &crate::config::loader::RawConfig,
 ) -> Result<(), ConfigError> {
+    // Rate control parameters
     if let Some(rps) = raw_config.target_rps {
         if rps <= 0.0 {
             return Err(ConfigError::InvalidTargetRps(rps.to_string()));
         }
     }
-
     if let Some(rate) = raw_config.min_success_rate {
         if !(0.0..=1.0).contains(&rate) {
             return Err(ConfigError::InvalidMinSuccessRate(rate.to_string()));
         }
     }
-
     if let Some(factor) = raw_config.rps_adjust_factor {
         if factor <= 0.0 {
             return Err(ConfigError::InvalidRpsAdjustFactor(factor.to_string()));
         }
     }
-
     if let Some(factor) = raw_config.success_rate_penalty_factor {
         if factor < 1.0 {
-            return Err(ConfigError::InvalidSuccessRatePenaltyFactor(
-                factor.to_string(),
-            ));
+            return Err(ConfigError::InvalidSuccessRatePenaltyFactor(factor.to_string()));
         }
     }
+    
+    // Helper closure for delay validations
+    let check_delay = |name: &str, value: u64| {
+        if value == 0 {
+            Err(ConfigError::InvalidDelayValue(format!("{} must be greater than 0", name)))
+        } else {
+            Ok(())
+        }
+    };
 
-    // 验证生成器延迟控制参数
+    // Validate generator delay control parameters
     if let Some(min_delay) = raw_config.min_delay_micros {
-        if min_delay == 0 {
-            return Err(ConfigError::InvalidTimeoutValue);
-        }
+        check_delay("min_delay_micros", min_delay)?;
     }
-
     if let Some(max_delay) = raw_config.max_delay_micros {
-        if max_delay == 0 {
-            return Err(ConfigError::InvalidTimeoutValue);
-        }
-        // 如果最小延迟也设置了，确保最大延迟大于最小延迟
+        check_delay("max_delay_micros", max_delay)?;
         if let Some(min_delay) = raw_config.min_delay_micros {
             if max_delay < min_delay {
-                return Err(ConfigError::InvalidTimeoutValue);
+                return Err(ConfigError::InvalidDelayValue("max_delay_micros must be greater than or equal to min_delay_micros".to_string()));
             }
         }
     }
-
     if let Some(initial_delay) = raw_config.initial_delay_micros {
-        if initial_delay == 0 {
-            return Err(ConfigError::InvalidTimeoutValue);
-        }
+        check_delay("initial_delay_micros", initial_delay)?;
     }
-
     if let Some(factor) = raw_config.increase_factor {
         if factor <= 1.0 {
             return Err(ConfigError::InvalidRpsAdjustFactor(factor.to_string()));
         }
     }
-
     if let Some(factor) = raw_config.decrease_factor {
-        if factor >= 1.0 || factor <= 0.0 {
+        if !(0.0 < factor && factor < 1.0) {
             return Err(ConfigError::InvalidRpsAdjustFactor(factor.to_string()));
         }
     }
-
+    
     Ok(())
 }

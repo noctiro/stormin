@@ -1,6 +1,6 @@
 [package]
 name = "stormin"
-version = "0.0.7"
+version = "0.0.8"
 license = "MIT"
 edition = "2024"
 
@@ -23,8 +23,8 @@ dashmap = "6.1.0"
 futures = "0.3.31"
 
 [profile.release]
-opt-level = "z"
+opt-level = 3
 lto = "fat"
 codegen-units = 1
 panic = "abort"
-strip = true
+strip = "symbols"
