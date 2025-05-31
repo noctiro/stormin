@@ -83,28 +83,36 @@ pub fn handle_event(app: &mut App, event: Event, running_state: RunningState) ->
             let mut stats = app.stats.blocking_lock();
             if stats.running_state == RunningState::Running {
                 stats.running_state = RunningState::Paused;
-                app.logger.info("Pausing workers and data generator (event)...");
-                app.data_generator_stop_signal.store(true, Ordering::Relaxed);
+                app.logger
+                    .info("Pausing workers and data generator (event)...");
+                app.data_generator_stop_signal
+                    .store(true, Ordering::Relaxed);
                 if let Err(e) = app.control_tx.send(WorkerMessage::Pause) {
-                    app.logger.warning(&format!("Failed to broadcast Pause message: {}", e));
+                    app.logger
+                        .warning(&format!("Failed to broadcast Pause message: {}", e));
                 }
             }
         }
         AppAction::Resume => {
             let mut stats = app.stats.blocking_lock();
-            let need_spawn = stats.running_state == RunningState::Paused && app.data_generator_handles.is_empty();
+            let need_spawn = stats.running_state == RunningState::Paused
+                && app.data_generator_handles.is_empty();
             if stats.running_state == RunningState::Paused {
                 stats.running_state = RunningState::Running;
-                app.logger.info("Resuming workers and data generator (event)...");
-                app.data_generator_stop_signal.store(false, Ordering::Relaxed);
+                app.logger
+                    .info("Resuming workers and data generator (event)...");
+                app.data_generator_stop_signal
+                    .store(false, Ordering::Relaxed);
             }
             drop(stats);
             if need_spawn {
-                app.logger.info("Data generators were stopped, respawning...");
+                app.logger
+                    .info("Data generators were stopped, respawning...");
                 app.spawn_data_generators();
             }
             if let Err(e) = app.control_tx.send(WorkerMessage::Resume) {
-                app.logger.warning(&format!("Failed to broadcast Resume message: {}", e));
+                app.logger
+                    .warning(&format!("Failed to broadcast Resume message: {}", e));
             }
         }
         AppAction::Quit => {

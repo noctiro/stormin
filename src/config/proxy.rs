@@ -117,10 +117,7 @@ impl ProxyConfig {
         };
         let start = std::time::Instant::now();
         // 优先用 HEAD，失败再用 GET
-        let fut = client
-            .head(test_url)
-            .header("User-Agent", "stormin")
-            .send();
+        let fut = client.head(test_url).header("User-Agent", "stormin").send();
         let head_result = match timeout(timeout_duration, fut).await {
             Ok(Ok(resp)) if resp.status().is_success() || resp.status().is_redirection() => {
                 return Ok(start.elapsed().as_millis());
@@ -130,10 +127,7 @@ impl ProxyConfig {
             Err(_) => Err("Timeout on HEAD request".to_string()),
         };
         // HEAD 失败或超时，降级为 GET
-        let fut = client
-            .get(test_url)
-            .header("User-Agent", "stormin")
-            .send();
+        let fut = client.get(test_url).header("User-Agent", "stormin").send();
         match timeout(timeout_duration, fut).await {
             Ok(Ok(resp)) if resp.status().is_success() || resp.status().is_redirection() => {
                 Ok(start.elapsed().as_millis())

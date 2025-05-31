@@ -21,21 +21,21 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 use sysinfo::System;
-use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::Mutex;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 pub struct App {
     pub config: loader::AttackConfig,
-    pub stats: Arc<TokioMutex<Stats>>,
+    pub stats: Arc<Mutex<Stats>>,
     pub logger: Logger,
     pub terminal: Option<Terminal<CrosstermBackend<Stdout>>>,
     pub control_tx: broadcast::Sender<WorkerMessage>,
     data_pool_tx: Option<mpsc::Sender<PreGeneratedRequest>>,
-    data_pool_rx: Option<Arc<TokioMutex<mpsc::Receiver<PreGeneratedRequest>>>>, // Use TokioMutex
+    data_pool_rx: Option<Arc<Mutex<mpsc::Receiver<PreGeneratedRequest>>>>, // Use Mutex
     pub target_stats_tx: mpsc::Sender<TargetUpdate>,
     pub target_stats_rx: mpsc::Receiver<TargetUpdate>,
     log_rx: Option<std_mpsc::Receiver<DebugInfo>>,
@@ -51,7 +51,11 @@ pub struct App {
 impl App {
     /// 设置终端 UI 相关资源
     fn setup_terminal() -> Result<
-        (Terminal<CrosstermBackend<Stdout>>, std_mpsc::Sender<DebugInfo>, std_mpsc::Receiver<DebugInfo>),
+        (
+            Terminal<CrosstermBackend<Stdout>>,
+            std_mpsc::Sender<DebugInfo>,
+            std_mpsc::Receiver<DebugInfo>,
+        ),
         Box<dyn Error>,
     > {
         enable_raw_mode()?;
@@ -66,27 +70,60 @@ impl App {
     }
 
     pub async fn new(config_path: &str, cli_mode: bool) -> Result<Self, Box<dyn Error>> {
-        // 1. CLI模式下，直接用CLI logger，TUI模式下先用临时CLI logger加载配置
-        let temp_logger = Logger::new(None, true);
-        let config = loader::load_config_and_compile(config_path, &temp_logger).await?;
-
-        // 2. 初始化UI资源和TUI日志通道
-        let (terminal, tx, log_rx) = if !cli_mode {
-            let (t, tx, rx) = Self::setup_terminal()?;
-            (Some(t), Some(tx), Some(rx))
+        // 首先初始化终端（如果是TUI模式）
+        let terminal = if !cli_mode {
+            let (t, _, _) = Self::setup_terminal()?;
+            Some(t)
         } else {
-            (None, None, None)
+            None
         };
 
-        // 3. 创建最终logger（TUI模式用tx，CLI模式tx为None）
-        let logger = Logger::new(tx, cli_mode);
+        // 创建日志通道和logger
+        let (logger_tx, mut log_rx) = if !cli_mode {
+            let (tx, rx) = std_mpsc::channel();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+        let logger = Logger::new(logger_tx.clone(), cli_mode);
 
-        // 4. 初始化通道
+        // 初始化控制通道和目标统计通道
         let (control_tx, _) = broadcast::channel(128);
         let (target_stats_tx, target_stats_rx) = mpsc::channel(256);
 
-        // 5. 初始化统计信息
-        let stats = Arc::new(TokioMutex::new(Stats {
+        // 立即启动日志接收线程（如果是TUI模式）
+        let log_receiver_handle = if !cli_mode {
+            let log_rx = log_rx.take().expect("Log receiver not initialized");
+            let debug_logs_tx = target_stats_tx.clone();
+            let logger_clone = logger.clone();
+
+            Some(thread::spawn(move || {
+                logger_clone.info("Log receiver thread started");
+                for log_entry in log_rx {
+                    let update = TargetUpdate {
+                        id: 0,
+                        url: String::new(),
+                        success: false,
+                        timestamp: log_entry.timestamp,
+                        debug: Some(log_entry.message),
+                        network_error: None,
+                        thread_id: std::thread::current().id(),
+                    };
+                    if debug_logs_tx.blocking_send(update).is_err() {
+                        break;
+                    }
+                }
+                logger_clone.info("Log receiver thread finished");
+            }))
+        } else {
+            None
+        };
+
+        // 加载配置
+        let config = loader::load_config_and_compile(config_path, &logger).await?;
+
+        // 初始化统计信息
+        let stats = Arc::new(Mutex::new(Stats {
             targets: config
                 .targets
                 .iter()
@@ -98,6 +135,7 @@ impl App {
                     last_success_time: None,
                     last_failure_time: None,
                     last_network_error: None,
+                    error_details: Vec::new(),
                     error_rate: 0.0,
                 })
                 .collect(),
@@ -133,12 +171,12 @@ impl App {
             worker_handles: Vec::new(),
             data_generator_handles: Vec::new(),
             data_generator_stop_signal: Arc::new(AtomicBool::new(false)),
-            log_receiver_handle: None,
+            log_receiver_handle,
             layout_rects: LayoutRects::default(),
             stats_updater: StatsUpdater::new(),
             cli_mode,
         })
-    } // App::new method ends here
+    }
 
     // spawn_data_generators is defined *after* App::new
     pub fn spawn_data_generators(&mut self) {
@@ -151,7 +189,7 @@ impl App {
         let pool_size = self.config.threads * 50;
         let (data_pool_tx, data_pool_rx) = mpsc::channel(pool_size);
         self.data_pool_tx = Some(data_pool_tx);
-        self.data_pool_rx = Some(Arc::new(TokioMutex::new(data_pool_rx))); // Use TokioMutex
+        self.data_pool_rx = Some(Arc::new(Mutex::new(data_pool_rx))); // Use Mutex
 
         self.data_generator_stop_signal
             .store(false, Ordering::SeqCst);
@@ -223,47 +261,38 @@ impl App {
         if self.cli_mode {
             return;
         }
-        self.logger
-            .info("Spawning log receiver thread (TUI mode)...");
-        let log_rx_taken = self
-            .log_rx
-            .take()
-            .expect("Log receiver already taken or not initialized for TUI");
+
+        let log_rx = match self.log_rx.take() {
+            Some(rx) => rx,
+            None => {
+                self.logger
+                    .error("Log receiver channel not initialized for TUI");
+                return;
+            }
+        };
+
         let debug_logs_tx = self.target_stats_tx.clone();
         let logger_clone = self.logger.clone();
 
+        self.logger.info("Starting log receiver thread for TUI...");
+
         let handle = thread::spawn(move || {
-            logger_clone.info("日志接收线程已启动");
-            loop {
-                match log_rx_taken.try_recv() {
-                    Ok(log_entry) => {
-                        let update = TargetUpdate {
-                            id: 0,
-                            url: String::new(),
-                            success: false,
-                            timestamp: log_entry.timestamp,
-                            debug: Some(log_entry.message),
-                            network_error: None,
-                            thread_id: std::thread::current().id(),
-                        };
-                        if debug_logs_tx.blocking_send(update).is_err() {
-                            eprintln!(
-                                "Log receiver: UI channel (debug_logs_tx) send failed, exiting log receiver loop."
-                            );
-                            break;
-                        }
-                    }
-                    Err(std_mpsc::TryRecvError::Empty) => {
-                        thread::sleep(Duration::from_millis(50));
-                    }
-                    Err(std_mpsc::TryRecvError::Disconnected) => {
-                        logger_clone
-                            .info("Log receiver: Logger sender disconnected, exiting loop.");
-                        break;
-                    }
+            logger_clone.info("Log receiver thread started");
+            for log_entry in log_rx {
+                let update = TargetUpdate {
+                    id: 0,
+                    url: String::new(),
+                    success: false,
+                    timestamp: log_entry.timestamp,
+                    debug: Some(log_entry.message),
+                    network_error: None,
+                    thread_id: std::thread::current().id(),
+                };
+                if debug_logs_tx.blocking_send(update).is_err() {
+                    break;
                 }
             }
-            logger_clone.info("Log receiver thread loop finished.");
+            logger_clone.info("Log receiver thread finished");
         });
         self.log_receiver_handle = Some(handle);
     }
@@ -287,10 +316,7 @@ impl App {
 
     async fn shutdown_components(&mut self) {
         self.logger.info("Shutdown initiated..."); // 1. 设置状态为停止中并让统计接收端立即停止工作
-        {
-            let mut stats = self.stats.lock().await;
-            stats.running_state = RunningState::Stopping;
-        }
+        self.stats.lock().await.running_state = RunningState::Stopping;
         // 立即消耗掉接收端，这样发送端会立即收到错误而不是等待
         let rx = std::mem::replace(&mut self.target_stats_rx, mpsc::channel(1).1);
         drop(rx); // 显式丢弃接收端
@@ -364,26 +390,7 @@ impl App {
         self.logger.info("All components shut down.");
     }
 
-    pub fn cleanup(&mut self) -> Result<(), Box<dyn Error>> {
-        if !self.cli_mode {
-            self.logger.info("Restoring terminal state (TUI mode)...");
-            if let Some(terminal) = self.terminal.as_mut() {
-                execute!(
-                    terminal.backend_mut(),
-                    LeaveAlternateScreen,
-                    DisableMouseCapture
-                )?;
-                terminal.show_cursor()?;
-            }
-            disable_raw_mode()?;
-            self.logger.info("Terminal state restored.");
-        } else {
-            self.logger.info("CLI mode: No terminal state to restore.");
-        }
-        Ok(())
-    }
-
-    pub fn stats_arc(&self) -> Arc<TokioMutex<Stats>> {
+    pub fn stats_arc(&self) -> Arc<Mutex<Stats>> {
         self.stats.clone()
     }
 
@@ -416,7 +423,7 @@ impl App {
         }
     }
 
-    pub async fn print_final_stats(&self) {
+    pub async fn print_final_stats(&mut self) {
         // 从原子计数器中获取总请求数
         let stats_guard = self.stats.lock().await;
         let total = stats_guard.total.load(Ordering::Relaxed);
@@ -427,30 +434,36 @@ impl App {
         } else {
             0.0
         };
-        println!("\nAttack Statistics Report:");
-        println!("----------------------");
-        println!("Total Requests: {}", total);
-        println!("Successful: {}", success);
-        println!("Failed: {}", failure);
-        println!("Success Rate: {:.2}%", success_rate);
 
-        // Print detailed statistics for each target
-        println!("\nDetailed Target Statistics:");
-        println!("-------------------------");
+        // 创建一个缓冲区来收集所有输出
+        let mut output = String::new();
+        output.push_str("\nAttack Statistics Report:\n");
+        output.push_str("----------------------\n");
+        output.push_str(&format!("Total Requests: {}\n", total));
+        output.push_str(&format!("Successful: {}\n", success));
+        output.push_str(&format!("Failed: {}\n", failure));
+        output.push_str(&format!("Success Rate: {:.2}%\n", success_rate));
+
+        // 收集目标统计信息
+        output.push_str("\nDetailed Target Statistics:\n");
+        output.push_str("-------------------------\n");
         for target in &stats_guard.targets {
             let target_success_rate = if target.success + target.failure > 0 {
                 (target.success as f64 / (target.success + target.failure) as f64) * 100.0
             } else {
                 0.0
             };
-            println!("Target [{}]:", target.url);
-            println!("  Successful: {}", target.success);
-            println!("  Failed: {}", target.failure);
-            println!("  Success Rate: {:.2}%", target_success_rate);
+            output.push_str(&format!("Target [{}]:\n", target.url));
+            output.push_str(&format!("  Successful: {}\n", target.success));
+            output.push_str(&format!("  Failed: {}\n", target.failure));
+            output.push_str(&format!("  Success Rate: {:.2}%\n", target_success_rate));
             if let Some(err) = &target.last_network_error {
-                println!("  Last Error: {}", err);
+                output.push_str(&format!("  Last Error: {}\n", err));
             }
-            println!();
+            output.push_str("\n");
         }
+
+        // 一次性打印所有统计信息
+        println!("{}", output);
     }
 }

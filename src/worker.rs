@@ -47,37 +47,38 @@ pub async fn worker_loop(
 ) {
     let mut paused = false;
     let loop_sleep_duration = Duration::from_millis(10);
-    
+
     // 智能代理选择
     let proxy_config = if !config.proxies.is_empty() {
         // 使用线程ID来确定代理，确保同一线程始终使用相同代理
-        let thread_id_hash = format!("{:?}", thread_id).as_bytes().iter().fold(0u64, |acc, &x| acc.wrapping_add(x as u64));
+        let thread_id_hash = format!("{:?}", thread_id)
+            .as_bytes()
+            .iter()
+            .fold(0u64, |acc, &x| acc.wrapping_add(x as u64));
         let proxy_index = (thread_id_hash as usize) % config.proxies.len();
         Some(config.proxies[proxy_index].clone())
     } else {
         None
     };
-    
+
     // 更优的客户端配置
     let client_builder = Client::builder()
         .pool_max_idle_per_host(10)
         .tcp_keepalive(Some(Duration::from_secs(30)))
         .timeout(config.timeout)
-        .pool_idle_timeout(Some(Duration::from_secs(90)));  // 增加连接池空闲超时
+        .pool_idle_timeout(Some(Duration::from_secs(90))); // 增加连接池空闲超时
 
     let client = match proxy_config {
-        Some(proxy) => {
-            match reqwest::Proxy::all(proxy.to_url_string()) {
-                Ok(reqwest_proxy) => client_builder.proxy(reqwest_proxy).build(),
-                Err(e) => {
-                    logger.error(&format!(
-                        "Worker {:?}: Failed to create proxy object from {}, falling back: {}",
-                        thread_id, proxy.raw, e
-                    ));
-                    client_builder.build()
-                }
+        Some(proxy) => match reqwest::Proxy::all(proxy.to_url_string()) {
+            Ok(reqwest_proxy) => client_builder.proxy(reqwest_proxy).build(),
+            Err(e) => {
+                logger.error(&format!(
+                    "Worker {:?}: Failed to create proxy object from {}, falling back: {}",
+                    thread_id, proxy.raw, e
+                ));
+                client_builder.build()
             }
-        }
+        },
         None => client_builder.build(),
     }
     .unwrap_or_else(|e| {
@@ -234,11 +235,19 @@ pub async fn worker_loop(
                                 let err_msg = if e.is_timeout() {
                                     "Timeout".to_string()
                                 } else if e.is_connect() {
-                                    "Connection Failed".to_string()
-                                } else if e.is_request() {
-                                    format!("Request Error: {}", e)
+                                    "Connection Error".to_string()
+                                } else if e.is_redirect() {
+                                    format!("Redirect Error: {}", e)
                                 } else if e.is_status() {
                                     format!("HTTP Error: {}", e)
+                                } else if e.is_body() {
+                                    format!("Body Error: {}", e)
+                                } else if e.is_request() {
+                                    format!("Request Error: {}", e)
+                                } else if e.is_decode() {
+                                    format!("Decode Error: {}", e)
+                                } else if e.is_builder() {
+                                    format!("Builder Error: {}", e)
                                 } else {
                                     format!("Other Error: {}", e)
                                 };
@@ -248,14 +257,14 @@ pub async fn worker_loop(
 
                         // 使用预分配容量构建消息，减少内存分配
                         let mut attack_message = String::with_capacity(512);
-                        
+
                         attack_message.push_str("[Request]\n");
                         attack_message.push_str(&format!("URL: {}\n", target_url));
                         attack_message.push_str(&format!("Method: {}\n", method));
                         attack_message.push_str(&format!("Duration: {:?}\n", duration));
                         attack_message.push_str(&format!("Status: {}",
                             status_code.map_or_else(|| "N/A".to_string(), |s| s.to_string())));
-                        
+
                         if !rendered_headers.is_empty() {
                             attack_message.push_str("\nHeaders:\n");
                             for (i, (k, v)) in rendered_headers.iter().enumerate() {
@@ -265,7 +274,7 @@ pub async fn worker_loop(
                                 attack_message.push_str(&format!("  {}: {}", k, v));
                             }
                         }
-                        
+
                         if !rendered_params.is_empty() {
                             attack_message.push_str("\nParams: ");
                             for (i, (k, v)) in rendered_params.iter().enumerate() {
@@ -275,7 +284,7 @@ pub async fn worker_loop(
                                 attack_message.push_str(&format!("{}={}", k, v));
                             }
                         }
-                        
+
                         if let Some(err) = &error_details {
                             attack_message.push_str(&format!("\nError: {}", err));
                         }
@@ -286,10 +295,10 @@ pub async fn worker_loop(
                             success,
                             timestamp,
                             debug: Some(attack_message),
-                            network_error: error_details,
+                            network_error: error_details.clone(),
                             thread_id,
                         };
-                        
+
                         // 发送状态更新
                         if stats_tx.send(update).await.is_err() {
                             logger.info(&format!("Worker {:?}: Stats channel closed, exiting.", thread_id));
@@ -304,6 +313,5 @@ pub async fn worker_loop(
                 }
             }
         }
-    } // This is the correct closing brace for the outer 'main_loop
-    logger.info(&format!("Worker thread {:?} finished", thread_id));
+    }
 }

@@ -40,7 +40,7 @@ impl StatsUpdater {
             batch_buffer: Vec::with_capacity(STATS_BATCH_SIZE),
         }
     }
-    
+
     // 添加辅助方法来更新缓存
     fn rebuild_target_cache(&mut self, stats: &Stats) {
         self.target_id_index_map.clear();
@@ -62,14 +62,14 @@ impl StatsUpdater {
         self.sysinfo_tick = self.sysinfo_tick.wrapping_add(1);
         if self.sysinfo_tick % 20 == 0 {
             stats.sys.refresh_all();
-            
+
             // 优化CPU使用率计算
             let cpus = stats.sys.cpus();
             if !cpus.is_empty() {
                 let total_usage: f32 = cpus.iter().map(|cpu| cpu.cpu_usage()).sum();
                 stats.cpu_usage = total_usage / cpus.len() as f32;
             }
-            
+
             stats.memory_usage = stats.sys.used_memory();
             needs_redraw_due_to_stats = true;
         }
@@ -77,28 +77,38 @@ impl StatsUpdater {
         // 批量收集更新
         let mut total_requests = 0u64;
         let mut total_successes = 0u64;
-        
+
         // 如果缓存为空，重建缓存
         if self.target_id_index_map.is_empty() && !stats.targets.is_empty() {
             self.rebuild_target_cache(stats);
         }
-        
+
         // 收集批量更新
         while let Ok(update) = target_stats_rx.try_recv() {
             self.batch_buffer.push(update);
-            
+
             if self.batch_buffer.len() >= STATS_BATCH_SIZE {
                 break; // 避免处理太多更新导致UI不响应
             }
         }
-        
+
         if !self.batch_buffer.is_empty() {
             needs_redraw_due_to_stats = true;
-            
+
             // 使用临时HashMap收集目标和线程更新
-            let mut target_updates: HashMap<usize, (u64, u64, String, Option<Instant>, Option<Instant>, Option<String>)> = HashMap::new();
+            let mut target_updates: HashMap<
+                usize,
+                (
+                    u64,
+                    u64,
+                    String,
+                    Option<Instant>,
+                    Option<Instant>,
+                    Option<String>,
+                ),
+            > = HashMap::new();
             let mut thread_updates: HashMap<ThreadId, u64> = HashMap::new();
-            
+
             // 第一步：处理批量更新，收集统计信息
             for update in self.batch_buffer.drain(..) {
                 // 处理调试消息
@@ -111,12 +121,12 @@ impl StatsUpdater {
                         stats.debug_logs.pop_front();
                     }
                 }
-                
+
                 if update.url.is_empty() {
                     // 纯调试消息，跳过统计更新
                     continue;
                 }
-                
+
                 // 更新总计数
                 total_requests += 1;
                 if update.success {
@@ -125,16 +135,16 @@ impl StatsUpdater {
                 } else {
                     stats.last_failure_time = Some(update.timestamp);
                 }
-                
+
                 // 合并目标更新
                 // 获取和更新值
                 let update_data = (
                     update.success,
                     update.timestamp,
                     update.network_error.clone(),
-                    update.url.clone()
+                    update.url.clone(),
                 );
-                
+
                 target_updates
                     .entry(update.id)
                     .and_modify(|e| {
@@ -154,7 +164,7 @@ impl StatsUpdater {
                         let mut failure = 0;
                         let mut success_time = None;
                         let mut failure_time = None;
-                        
+
                         if update_data.0 {
                             success = 1;
                             success_time = Some(update_data.1);
@@ -162,36 +172,47 @@ impl StatsUpdater {
                             failure = 1;
                             failure_time = Some(update_data.1);
                         }
-                        
-                        (success, failure, update_data.3, success_time, failure_time, update_data.2)
+
+                        (
+                            success,
+                            failure,
+                            update_data.3,
+                            success_time,
+                            failure_time,
+                            update_data.2,
+                        )
                     });
-                
+
                 // 合并线程更新
                 *thread_updates.entry(update.thread_id).or_insert(0) += 1;
             }
-            
+
             // 更新原子计数器
             if total_requests > 0 {
-                stats.total.fetch_add(total_requests, std::sync::atomic::Ordering::Relaxed);
+                stats
+                    .total
+                    .fetch_add(total_requests, std::sync::atomic::Ordering::Relaxed);
                 self.requests_in_last_second += total_requests;
             }
-            
+
             if total_successes > 0 {
-                stats.success.fetch_add(total_successes, std::sync::atomic::Ordering::Relaxed);
+                stats
+                    .success
+                    .fetch_add(total_successes, std::sync::atomic::Ordering::Relaxed);
                 self.successes_in_last_second += total_successes;
             }
-            
+
             if total_requests > total_successes {
                 stats.failure.fetch_add(
-                    total_requests - total_successes, 
-                    std::sync::atomic::Ordering::Relaxed
+                    total_requests - total_successes,
+                    std::sync::atomic::Ordering::Relaxed,
                 );
             }
-            
+
             // 为更新目标准备缓存
             let mut target_indices = Vec::new();
             let mut missing_targets = Vec::new();
-            
+
             // 首先收集所有目标索引或确定哪些是缺失的
             for (id, _) in &target_updates {
                 if let Some(idx) = self.target_id_index_map.get(id) {
@@ -205,25 +226,28 @@ impl StatsUpdater {
                     missing_targets.push(*id);
                 }
             }
-            
+
             // 如果有缺失的目标，重建缓存
             if !missing_targets.is_empty() {
                 self.rebuild_target_cache(stats);
-                
+
                 // 再次尝试获取索引
                 for id in missing_targets {
                     if let Some(idx) = self.target_id_index_map.get(&id) {
                         let idx_value = *idx.value();
                         if idx_value < stats.targets.len() {
                             target_indices.push((id, idx_value));
-                        } else if let Some((_success, _failure, url, _, _, _)) = target_updates.get(&id) {
+                        } else if let Some((_success, _failure, url, _, _, _)) =
+                            target_updates.get(&id)
+                        {
                             let warning_msg = format!(
                                 "StatsUpdater: Received update for unknown target ID: {} for URL: {}",
                                 id, url
                             );
                             logger.warning(&warning_msg);
                         }
-                    } else if let Some((_success, _failure, url, _, _, _)) = target_updates.get(&id) {
+                    } else if let Some((_success, _failure, url, _, _, _)) = target_updates.get(&id)
+                    {
                         let warning_msg = format!(
                             "StatsUpdater: Received update for unknown target ID: {} for URL: {}",
                             id, url
@@ -232,10 +256,12 @@ impl StatsUpdater {
                     }
                 }
             }
-            
+
             // 应用目标更新
             for (id, idx_value) in target_indices {
-                if let Some((success, failure, _, success_time, failure_time, network_error)) = target_updates.get(&id) {
+                if let Some((success, failure, _, success_time, failure_time, network_error)) =
+                    target_updates.get(&id)
+                {
                     let target_stat = &mut stats.targets[idx_value];
                     target_stat.success += success;
                     target_stat.failure += failure;
@@ -247,6 +273,8 @@ impl StatsUpdater {
                     }
                     if let Some(err) = network_error {
                         target_stat.last_network_error = Some(err.clone());
+                        // 记录详细错误信息
+                        target_stat.error_details.push(err.clone());
                     } else if *failure > 0 && target_stat.last_network_error.is_some() {
                         // 只在非网络错误时清除
                         target_stat.last_network_error = None;
@@ -258,7 +286,7 @@ impl StatsUpdater {
                     }
                 }
             }
-            
+
             // 应用线程更新
             let now = Instant::now();
             for (thread_id, request_count) in thread_updates {
@@ -298,13 +326,15 @@ impl StatsUpdater {
             while stats.rps_history.len() > HISTORY_CAPACITY {
                 stats.rps_history.pop_front();
             }
-            
+
             // 更新成功RPS历史
-            stats.successful_requests_per_second_history.push_back(self.successes_in_last_second);
+            stats
+                .successful_requests_per_second_history
+                .push_back(self.successes_in_last_second);
             while stats.successful_requests_per_second_history.len() > HISTORY_CAPACITY {
                 stats.successful_requests_per_second_history.pop_front();
             }
-            
+
             // 计算并更新成功率历史，使用整数计算避免浮点运算
             let current_success_rate = if self.requests_in_last_second > 0 {
                 ((self.successes_in_last_second * 100) / self.requests_in_last_second).min(100)
@@ -313,19 +343,19 @@ impl StatsUpdater {
             } else {
                 100 // 默认值为 100（如果没有请求）
             };
-            
+
             stats.success_rate_history.push_back(current_success_rate);
             while stats.success_rate_history.len() > HISTORY_CAPACITY {
                 stats.success_rate_history.pop_front();
             }
-            
+
             // 重置计数器
             self.requests_in_last_second = 0;
             self.successes_in_last_second = 0;
             self.last_stats_update_time = Instant::now();
             needs_redraw_due_to_stats = true;
         }
-        
+
         needs_redraw_due_to_stats
     }
 }

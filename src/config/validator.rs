@@ -297,14 +297,19 @@ pub fn validate_rate_control_config(
     }
     if let Some(factor) = raw_config.success_rate_penalty_factor {
         if factor < 1.0 {
-            return Err(ConfigError::InvalidSuccessRatePenaltyFactor(factor.to_string()));
+            return Err(ConfigError::InvalidSuccessRatePenaltyFactor(
+                factor.to_string(),
+            ));
         }
     }
-    
+
     // Helper closure for delay validations
     let check_delay = |name: &str, value: u64| {
         if value == 0 {
-            Err(ConfigError::InvalidDelayValue(format!("{} must be greater than 0", name)))
+            Err(ConfigError::InvalidDelayValue(format!(
+                "{} must be greater than 0",
+                name
+            )))
         } else {
             Ok(())
         }
@@ -318,7 +323,10 @@ pub fn validate_rate_control_config(
         check_delay("max_delay_micros", max_delay)?;
         if let Some(min_delay) = raw_config.min_delay_micros {
             if max_delay < min_delay {
-                return Err(ConfigError::InvalidDelayValue("max_delay_micros must be greater than or equal to min_delay_micros".to_string()));
+                return Err(ConfigError::InvalidDelayValue(
+                    "max_delay_micros must be greater than or equal to min_delay_micros"
+                        .to_string(),
+                ));
             }
         }
     }
@@ -335,6 +343,6 @@ pub fn validate_rate_control_config(
             return Err(ConfigError::InvalidRpsAdjustFactor(factor.to_string()));
         }
     }
-    
+
     Ok(())
 }

@@ -42,6 +42,7 @@ pub struct TargetStats {
     pub last_success_time: Option<Instant>,
     pub last_failure_time: Option<Instant>,
     pub last_network_error: Option<String>, // 存储最后的网络错误信息
+    pub error_details: Vec<String>,         // 用于存储详细错误信息
     pub error_rate: f64,                    // 动态错误率
 }
 
@@ -910,10 +911,10 @@ pub fn draw_ui<B: Backend>(
             .widths(&[
                 Constraint::Percentage(34), // URL
                 Constraint::Percentage(16), // S/F
-                Constraint::Percentage(6), // Rate
-                Constraint::Percentage(5), // RPS
-                Constraint::Percentage(8), // Last OK
-                Constraint::Percentage(8), // Last Fail
+                Constraint::Percentage(6),  // Rate
+                Constraint::Percentage(5),  // RPS
+                Constraint::Percentage(8),  // Last OK
+                Constraint::Percentage(8),  // Last Fail
                 Constraint::Percentage(23), // Error
             ])
             .header(target_header)
@@ -986,7 +987,7 @@ pub async fn run_tui(app: &mut App) -> Result<(), Box<dyn Error>> {
             match app_action {
                 crate::ui::event_handler::AppAction::Quit => {
                     app.logger.info(
-                        "Quit action received. Signaling workers to stop and exiting immediately.",
+                        "Quit action received. Signaling workers to stop and preparing to exit.",
                     );
                     let _ = app.control_tx.send(crate::worker::WorkerMessage::Stop);
                     if let Some(terminal) = app.terminal.as_mut() {
@@ -998,9 +999,10 @@ pub async fn run_tui(app: &mut App) -> Result<(), Box<dyn Error>> {
                         let _ = terminal.show_cursor();
                     }
                     let _ = disable_raw_mode();
-                    app.logger
-                        .info("Exiting application now via std::process::exit(0).");
-                    std::process::exit(0);
+                    app.logger.info(
+                        "TUI resources cleaned up. Breaking out of TUI loop to print final stats.",
+                    );
+                    break;
                 }
                 _ => {}
             }

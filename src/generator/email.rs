@@ -3,15 +3,38 @@ use rand::{Rng, RngCore};
 
 static COMMON_SERVER: &[&str] = &[
     // Global
-    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com", "aol.com",
-    "icloud.com", "mail.com", "protonmail.com", "zoho.com", "gmx.com", "yandex.com", "msn.com", "me.com",
-
+    "gmail.com",
+    "googlemail.com",
+    "outlook.com",
+    "hotmail.com",
+    "live.com",
+    "yahoo.com",
+    "aol.com",
+    "icloud.com",
+    "mail.com",
+    "protonmail.com",
+    "zoho.com",
+    "gmx.com",
+    "yandex.com",
+    "msn.com",
+    "me.com",
     // Chinese
-    "qq.com", "vip.qq.com", "foxmail.com",
-    "163.com", "vip.163.com", "126.com", "yeah.net",
-    "sina.com", "sina.cn", "sohu.com",
-    "aliyun.com", "aliyun.cn", "taobao.com",
-    "139.com", "189.cn", "wo.cn",
+    "qq.com",
+    "vip.qq.com",
+    "foxmail.com",
+    "163.com",
+    "vip.163.com",
+    "126.com",
+    "yeah.net",
+    "sina.com",
+    "sina.cn",
+    "sohu.com",
+    "aliyun.com",
+    "aliyun.cn",
+    "taobao.com",
+    "139.com",
+    "189.cn",
+    "wo.cn",
 ];
 
 pub fn generate_email<T: RngCore>(rng: &mut T) -> String {
