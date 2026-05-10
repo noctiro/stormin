@@ -1,6 +1,6 @@
-use rand::RngCore;
+use rand::Rng;
 
-pub fn generate_qq_id<T: RngCore>(rng: &mut T) -> String {
+pub fn generate_qq_id<T: Rng>(rng: &mut T) -> String {
     // 生成长度：6 到 12
     let length = (rng.next_u32() % 7) as usize + 6;
 

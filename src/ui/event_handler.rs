@@ -3,6 +3,7 @@ use std::sync::atomic::Ordering;
 use crate::app::App;
 use crate::ui::RunningState;
 use crate::worker::WorkerMessage;
+use ratatui::layout::Position;
 use crossterm::event::{Event, KeyCode, MouseButton, MouseEventKind};
 
 // Define actions that can result from event handling
@@ -47,20 +48,21 @@ pub fn handle_event(app: &mut App, event: Event, running_state: RunningState) ->
                         let pause_rect = app.layout_rects.pause_btn;
                         let resume_rect = app.layout_rects.resume_btn;
                         let quit_rect = app.layout_rects.quit_btn;
+                        let pos = Position::new(col, row);
 
-                        if pause_rect.contains(col, row) {
+                        if pause_rect.contains(pos) {
                             if running_state == RunningState::Running {
                                 app_action = AppAction::Pause;
                             } else {
                                 needs_redraw = false;
                             }
-                        } else if resume_rect.contains(col, row) {
+                        } else if resume_rect.contains(pos) {
                             if running_state == RunningState::Paused {
                                 app_action = AppAction::Resume;
                             } else {
                                 needs_redraw = false;
                             }
-                        } else if quit_rect.contains(col, row) {
+                        } else if quit_rect.contains(pos) {
                             app_action = AppAction::Quit;
                         } else {
                             needs_redraw = false;
@@ -122,15 +124,4 @@ pub fn handle_event(app: &mut App, event: Event, running_state: RunningState) ->
     }
 
     (needs_redraw, app_action)
-}
-
-// Extension trait for ratatui::layout::Rect to add a contains method
-pub trait RectContainsPoint {
-    fn contains(&self, x: u16, y: u16) -> bool;
-}
-
-impl RectContainsPoint for ratatui::layout::Rect {
-    fn contains(&self, x: u16, y: u16) -> bool {
-        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
-    }
 }

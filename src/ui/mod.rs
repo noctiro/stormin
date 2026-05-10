@@ -9,7 +9,6 @@ use crossterm::{
 };
 use ratatui::{
     prelude::*,
-    symbols,
     widgets::{
         Block, BorderType, Borders, Cell, Gauge, LineGauge, Paragraph, Row, Sparkline, Table,
         TableState, Wrap,
@@ -113,11 +112,14 @@ fn format_elapsed(secs: f64) -> String {
 pub fn draw_ui<B: Backend>(
     terminal: &mut Terminal<B>,
     stats: &Stats,
-) -> std::io::Result<LayoutRects> {
+) -> std::io::Result<LayoutRects>
+where
+    std::io::Error: From<B::Error>,
+{
     let mut layout_rects = LayoutRects::default();
 
     terminal.draw(|f| {
-        let size = f.size();
+        let size = f.area();
 
         // 将屏幕分为左右两个部分
         let main_chunks = Layout::default()
@@ -367,8 +369,7 @@ pub fn draw_ui<B: Backend>(
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::DarkGray)),
             )
-            .gauge_style(Style::default().fg(Color::Cyan))
-            .line_set(symbols::line::THICK)
+            .filled_style(Style::default().fg(Color::Cyan))
             .ratio(cpu_ratio);
         f.render_widget(cpu_gauge, sys_info_block[0]);
 
@@ -393,8 +394,7 @@ pub fn draw_ui<B: Backend>(
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::DarkGray)),
             )
-            .gauge_style(Style::default().fg(Color::Magenta))
-            .line_set(symbols::line::THICK)
+            .filled_style(Style::default().fg(Color::Magenta))
             .ratio(memory_ratio);
         f.render_widget(memory_gauge, sys_info_block[1]);
 
@@ -907,8 +907,7 @@ pub fn draw_ui<B: Backend>(
                 target_rows
             }
         };
-        let target_table_widget = Table::new(visible_target_rows)
-            .widths(&[
+        let target_table_widget = Table::new(visible_target_rows, [
                 Constraint::Percentage(34), // URL
                 Constraint::Percentage(16), // S/F
                 Constraint::Percentage(6),  // Rate

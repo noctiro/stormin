@@ -17,7 +17,7 @@ use crate::{
     logger::Logger,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use rand::Rng;
+use rand::{Rng, RngExt};
 
 /// Applies built-in template functions.
 /// Takes the function name, rendered arguments, and the current rendering context.

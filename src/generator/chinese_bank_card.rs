@@ -1,4 +1,4 @@
-use rand::Rng;
+use rand::RngExt;
 
 // 中国主要银行的银行识别号(BIN)前缀 - 用u8数组而非字符串存储
 static BANK_BINS: &[[u8; 6]] = &[
@@ -17,7 +17,7 @@ static BANK_BINS: &[[u8; 6]] = &[
     [6, 2, 2, 3, 2, 3], // 兴业银行
 ];
 
-pub fn generate_chinese_bank_card<T: rand::RngCore>(rng: &mut T) -> String {
+pub fn generate_chinese_bank_card<T: rand::Rng>(rng: &mut T) -> String {
     // 使用固定大小的数组，最大可能的卡号长度为19位
     let mut digits = [0u8; 19];
 

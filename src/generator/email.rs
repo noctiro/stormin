@@ -1,5 +1,5 @@
 use super::username;
-use rand::{Rng, RngCore};
+use rand::{Rng, RngExt};
 
 static COMMON_SERVER: &[&str] = &[
     // Global
@@ -37,7 +37,7 @@ static COMMON_SERVER: &[&str] = &[
     "wo.cn",
 ];
 
-pub fn generate_email<T: RngCore>(rng: &mut T) -> String {
+pub fn generate_email<T: Rng>(rng: &mut T) -> String {
     let username = username::generate_username(rng);
     let server = COMMON_SERVER[rng.random_range(0..COMMON_SERVER.len())];
     format!("{}@{}", username, server)

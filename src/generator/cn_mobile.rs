@@ -1,4 +1,4 @@
-use rand::RngCore;
+use rand::Rng;
 
 // Lookup table to replace `% 10` for 4-bit values (0–15)
 const MOD_10_TABLE: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5];
@@ -18,7 +18,7 @@ const ASCII_ZERO: u8 = b'0';
 
 // Fast path for phone number generation optimized for maximum throughput
 #[inline(always)]
-pub fn generate_cn_mobile<T: RngCore>(rng: &mut T) -> String {
+pub fn generate_cn_mobile<T: Rng>(rng: &mut T) -> String {
     // Stack allocation of fixed-size buffer pre-filled with zeros
     let mut buffer = [0u8; 11];
 

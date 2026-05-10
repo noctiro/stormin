@@ -1,6 +1,6 @@
-use rand::Rng;
+use rand::RngExt;
 
-pub fn generate_chinese_id<T: rand::RngCore>(rng: &mut T) -> String {
+pub fn generate_chinese_id<T: rand::Rng>(rng: &mut T) -> String {
     // Pre-allocate a String with the exact capacity needed
     let mut id = String::with_capacity(18);
 

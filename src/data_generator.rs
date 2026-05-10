@@ -5,7 +5,6 @@ use crate::ui::Stats;
 use crate::worker::PreGeneratedRequest;
 
 use dashmap::DashMap;
-use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::{
     collections::HashMap,
@@ -30,7 +29,7 @@ pub async fn data_generator_loop(
 ) {
     logger.info(&format!("Data generator loop {} started.", generator_id));
     // 使用更高效的随机数生成器
-    let mut rng = StdRng::from_os_rng();
+    let mut rng: StdRng = rand::make_rng();
     let mut current_delay_micros = config.initial_delay_micros;
 
     // 筛选出此生成器负责的目标配置

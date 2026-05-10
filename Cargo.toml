@@ -5,15 +5,15 @@ license = "MIT"
 edition = "2024"
 
 [dependencies]
-rand = "0.9.1"
+rand = "0.10.1"
 serde = { version = "1.0.219", features = ["derive"] }
-toml = "0.8.22"
-base64 = "0.21.0"
-ratatui = "0.24.0"
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "socks"], default-features = false }
+toml = "1"
+base64 = "0.22.1"
+ratatui = "0.30.0"
+reqwest = { version = "0.13.3", features = ["json", "rustls", "socks", "query", "form"], default-features = false }
 crossterm = "0.29"
 ctrlc = "3.4.6"
-sysinfo = "0.34.2"
+sysinfo = "0.39.0"
 url = "2"
 tokio = { version = "1", features = ["full"] }
 pest = "2.7"

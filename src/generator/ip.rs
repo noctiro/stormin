@@ -1,7 +1,7 @@
-use rand::RngCore;
+use rand::Rng;
 use std::fmt::Write;
 
-pub fn generate_ipv4<T: RngCore>(rng: &mut T) -> String {
+pub fn generate_ipv4<T: Rng>(rng: &mut T) -> String {
     let ip_int: u32 = rng.next_u32();
 
     let mut ip_string = String::with_capacity(15); // "xxx.xxx.xxx.xxx" 最多15个字符
@@ -19,7 +19,7 @@ pub fn generate_ipv4<T: RngCore>(rng: &mut T) -> String {
     ip_string
 }
 
-pub fn generate_ipv6<T: RngCore>(rng: &mut T) -> String {
+pub fn generate_ipv6<T: Rng>(rng: &mut T) -> String {
     // 生成一个随机的 u128 值
     let ip_int: u128 = rng.next_u64() as u128 | (rng.next_u64() as u128) << 64;
 

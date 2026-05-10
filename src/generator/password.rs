@@ -1,4 +1,4 @@
-use rand::{Rng, RngCore};
+use rand::{Rng, RngExt};
 
 // ---------- Chinese社工密码生成器 ----------
 const COMMON_SURNAMES: &[&str] = &[
@@ -151,11 +151,11 @@ const COMMON_GIVEN_NAMES: &[&str] = &[
 ];
 
 // 全拼或者首字母
-fn pick_form<'a, T: RngCore>(s: &'a str, rng: &mut T) -> &'a str {
+fn pick_form<'a, T: Rng>(s: &'a str, rng: &mut T) -> &'a str {
     if rng.random_bool(0.5) { s } else { &s[0..1] }
 }
 
-fn generate_name<T: RngCore>(rng: &mut T) -> String {
+fn generate_name<T: Rng>(rng: &mut T) -> String {
     let surname = COMMON_SURNAMES[rng.random_range(0..COMMON_SURNAMES.len())];
     let name_len = match rng.random_range(0..10) {
         0 => 2,
@@ -171,7 +171,7 @@ fn generate_name<T: RngCore>(rng: &mut T) -> String {
     name
 }
 
-fn generate_birthday<T: RngCore>(rng: &mut T) -> String {
+fn generate_birthday<T: Rng>(rng: &mut T) -> String {
     let year = rng.random_range(1970..=2010);
     let month = rng.random_range(1..=12);
     let day = rng.random_range(1..=28);
@@ -188,7 +188,7 @@ fn generate_birthday<T: RngCore>(rng: &mut T) -> String {
     }
 }
 
-fn generate_chinese_password<T: RngCore>(rng: &mut T) -> String {
+fn generate_chinese_password<T: Rng>(rng: &mut T) -> String {
     let name = generate_name(rng);
     let bday = generate_birthday(rng);
     if rng.random_bool(0.5) {
@@ -200,7 +200,7 @@ fn generate_chinese_password<T: RngCore>(rng: &mut T) -> String {
 
 // ---------- 强密码生成器 ----------
 
-fn generate_strong_password<T: RngCore>(rng: &mut T) -> String {
+fn generate_strong_password<T: Rng>(rng: &mut T) -> String {
     const LETTERS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
     const DIGITS: &[u8] = b"0123456789";
     const SYMBOLS: &[u8] = b"!@#$%^&*_-";
@@ -221,7 +221,7 @@ fn generate_strong_password<T: RngCore>(rng: &mut T) -> String {
         .collect()
 }
 
-pub fn generate_password<T: RngCore>(rng: &mut T) -> String {
+pub fn generate_password<T: Rng>(rng: &mut T) -> String {
     if rng.random_bool(0.5) {
         generate_chinese_password(rng)
     } else {

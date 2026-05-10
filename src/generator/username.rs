@@ -1,4 +1,4 @@
-use rand::{Rng, RngCore};
+use rand::{Rng, RngExt};
 
 static ADJECTIVES: &[&str] = &[
     "silent",
@@ -2252,7 +2252,7 @@ static COMMON_SUFFIXES: &[&str] = &[
     "swirl", "trance", "trend", "venture", "vibe", "vista", "zone",
 ];
 
-pub fn generate_username<T: RngCore + Rng>(rng: &mut T) -> String {
+pub fn generate_username<T: Rng>(rng: &mut T) -> String {
     // Pre-allocate with a reasonable capacity to avoid reallocations
     let mut result = String::with_capacity(64);
 
@@ -2404,7 +2404,7 @@ fn capitalize_into(s: &str, buf: &mut String) {
 }
 
 // Optimized version pushing directly to buffer
-fn mix_case<T: RngCore>(s: &str, buf: &mut String, rng: &mut T) {
+fn mix_case<T: Rng>(s: &str, buf: &mut String, rng: &mut T) {
     for c in s.chars() {
         // Use next_u32 with mask for better performance than gen_bool
         buf.push(if rng.next_u32() & 1 == 0 {
@@ -2458,7 +2458,7 @@ fn apply_capitalization(s: &mut String, mode: u8) {
     }
 }
 
-fn insert_random_str<T: RngCore>(rng: &mut T, len: usize) -> String {
+fn insert_random_str<T: Rng>(rng: &mut T, len: usize) -> String {
     const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let mut s = String::with_capacity(len);
     for _ in 0..len {

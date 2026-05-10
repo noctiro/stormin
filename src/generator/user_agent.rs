@@ -1,4 +1,4 @@
-use rand::RngCore;
+use rand::Rng;
 
 // Static string slices to minimize memory allocations
 static BROWSERS: [&str; 4] = ["Chrome", "Firefox", "Safari", "Edge"];
@@ -13,7 +13,7 @@ static OS: [&str; 8] = [
     "Windows Phone",
 ];
 
-pub fn generate_user_agent<T: RngCore>(rng: &mut T) -> String {
+pub fn generate_user_agent<T: Rng>(rng: &mut T) -> String {
     // Pre-allocated buffer for better performance
     let mut buffer = Vec::with_capacity(128);
 

@@ -1,4 +1,4 @@
-use rand::RngCore;
+use rand::Rng;
 
 // 常见中文姓氏列表
 static SURNAMES: &[&str] = &[
@@ -21,7 +21,7 @@ const CHAR_START: u32 = 0x4E00; // CJK统一汉字起始点
 const CHAR_END: u32 = 0x9FA5; // 常用汉字终止点 (更窄的范围)
 const CHAR_RANGE: u32 = CHAR_END - CHAR_START + 1;
 
-pub fn generate_chinese_name<T: RngCore>(rng: &mut T) -> String {
+pub fn generate_chinese_name<T: Rng>(rng: &mut T) -> String {
     // 提前计算好容量以避免重新分配
     let mut name = String::with_capacity(12); // 足够存储UTF-8编码的3-4个汉字
 
