@@ -1,8 +1,8 @@
 # 全局配置
 # 工作任务数，由 Tokio 调度，默认为 CPU 核心数 * 16
-# threads = 64
-# 数据生成任务数，由 Tokio 调度，默认为 max(threads / 512, 1)
-# generator_threads = 1
+# worker_tasks = 64
+# 数据生成任务数，由 Tokio 调度，默认为 max(worker_tasks / 512, 1)
+# generator_tasks = 1
 # 代理路径 (如果不存在或为空，则不使用代理)
 # proxy = "proxy.txt"
 # 超时时间，单位秒

@@ -16,14 +16,16 @@ Stormin 是一个拥有 TUI 界面的注册轰炸机，专门用于整治盗号�
 
 你可以浏览文档和参考项目中的 `example.config.toml` 来学习如何编写配置文件。
 
-`threads` 和 `generator_threads` 分别表示工作任务数和数据生成任务数，由 Tokio 调度。字段名保留以兼容现有配置。
+`worker_tasks` 和 `generator_tasks` 分别表示工作任务数和数据生成任务数，由 Tokio 调度。
+
+原配置字段 `threads` 和 `generator_threads` 已移除，请改用新字段名。配置中的未知顶层字段会直接报错。
 
 ### 基本结构
 
 ```toml
 # --- 基础配置项 (可选) ---
-threads = 64                       # 工作任务数 (可选，默认为 CPU 核数 * 16)
-generator_threads = 1              # 数据生成任务数 (可选，默认 max(threads / 512, 1))
+worker_tasks = 64                  # 工作任务数 (可选，默认为 CPU 核数 * 16)
+generator_tasks = 1                # 数据生成任务数 (可选，默认 max(worker_tasks / 512, 1))
 timeout = 5                        # 超时时间，单位秒 (可选，默认 5 秒)
 cli_update_interval_secs = 1       # CLI模式下的统计信息更新间隔（秒）（可选）
 start_paused = false               # 是否以暂停状态启动（可选，默认 false）

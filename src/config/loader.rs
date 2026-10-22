@@ -10,9 +10,12 @@ use std::{error::Error, fs, num::NonZeroUsize, time::Duration};
 // --- Configuration Structs ---
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawConfig {
-    pub threads: Option<usize>,           // Tokio 工作任务数，保留兼容配置名
-    pub generator_threads: Option<usize>, // 数据生成任务数，保留兼容配置名
+    /// Tokio 工作任务数。
+    pub worker_tasks: Option<usize>,
+    /// 数据生成任务数。
+    pub generator_tasks: Option<usize>,
     pub timeout: Option<u64>,
     pub proxy: Option<ProxyFileSource>,
     /// 代理允许的最大延迟（毫秒），默认500ms
@@ -47,10 +50,10 @@ pub struct RawTarget {
 
 #[derive(Clone, Debug)]
 pub struct AttackConfig {
-    /// Tokio 工作任务数，沿用 threads 配置名。
-    pub threads: usize,
-    /// 数据生成任务数，沿用 generator_threads 配置名。
-    pub generator_threads: usize,
+    /// Tokio 工作任务数。
+    pub worker_tasks: usize,
+    /// 数据生成任务数。
+    pub generator_tasks: usize,
     pub timeout: Duration,
     pub targets: Vec<CompiledTarget>,
     pub proxies: Vec<ProxyConfig>,
@@ -341,7 +344,7 @@ pub async fn load_config_and_compile(
     }
 
     // Resolve worker task count, data generator task count, and timeout.
-    let threads = if let Some(t) = raw.threads {
+    let worker_tasks = if let Some(t) = raw.worker_tasks {
         if t < 1 {
             logger.error("Worker task count must be at least 1");
             return Err(ConfigError::InvalidWorkerTaskCount.into());
@@ -353,7 +356,7 @@ pub async fn load_config_and_compile(
             .get()
             * 16
     };
-    let generator_threads = match raw.generator_threads {
+    let generator_tasks = match raw.generator_tasks {
         Some(g) => {
             if g < 1 {
                 logger.error("Data generator task count must be at least 1");
@@ -361,7 +364,7 @@ pub async fn load_config_and_compile(
             }
             g
         }
-        None => (threads / 512).max(1),
+        None => (worker_tasks / 512).max(1),
     };
     let timeout = if let Some(t) = raw.timeout {
         if t <= 0 {
@@ -496,11 +499,11 @@ pub async fn load_config_and_compile(
         None => Duration::from_secs(0),
     };
     Ok(AttackConfig {
-        threads,
+        worker_tasks,
         timeout: Duration::from_secs(timeout),
         targets: compiled,
         proxies,
-        generator_threads,
+        generator_tasks,
         min_delay_micros: raw.min_delay_micros.unwrap_or(1000),
         max_delay_micros: raw.max_delay_micros.unwrap_or(100_000),
         initial_delay_micros: raw.initial_delay_micros.unwrap_or(5000),
@@ -510,4 +513,47 @@ pub async fn load_config_and_compile(
         start_paused: raw.start_paused.unwrap_or(false),
         run_duration,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RawConfig;
+
+    #[test]
+    fn reads_task_count_fields() {
+        let config: RawConfig = toml::from_str("worker_tasks = 4\ngenerator_tasks = 2")
+            .expect("new task count fields should deserialize");
+
+        assert_eq!(config.worker_tasks, Some(4));
+        assert_eq!(config.generator_tasks, Some(2));
+    }
+
+    #[test]
+    fn task_count_fields_remain_optional() {
+        let config: RawConfig = toml::from_str("timeout = 5\nstart_paused = true")
+            .expect("task count fields should remain optional");
+
+        assert_eq!(config.worker_tasks, None);
+        assert_eq!(config.generator_tasks, None);
+        assert_eq!(config.timeout, Some(5));
+        assert_eq!(config.start_paused, Some(true));
+    }
+
+    #[test]
+    fn rejects_removed_task_count_fields() {
+        for field in ["threads", "generator_threads"] {
+            for prefix in ["", "worker_tasks = 4\ngenerator_tasks = 2\n"] {
+                let input = format!("{prefix}{field} = 8");
+                let error = toml::from_str::<RawConfig>(&input)
+                    .expect_err("removed fields must not be silently ignored");
+
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("unknown field `{field}`")),
+                    "unexpected error: {error}"
+                );
+            }
+        }
+    }
 }

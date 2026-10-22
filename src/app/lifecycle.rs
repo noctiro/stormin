@@ -11,13 +11,13 @@ use tokio::time::timeout;
 
 impl App {
     pub fn spawn_data_generators(&mut self) {
-        let generator_task_count = self.config.generator_threads;
+        let generator_task_count = self.config.generator_tasks;
         self.logger.info(&format!(
             "Spawning {} data generator tasks...",
             generator_task_count
         ));
 
-        let pool_size = self.config.threads * 50;
+        let pool_size = self.config.worker_tasks * 50;
         let (data_pool_tx, data_pool_rx) = mpsc::channel(pool_size);
         self.data_pool_tx = Some(data_pool_tx);
         self.data_pool_rx = Some(Arc::new(Mutex::new(data_pool_rx)));
@@ -59,9 +59,11 @@ impl App {
     }
 
     pub fn spawn_workers(&mut self) {
-        self.logger
-            .info(&format!("Spawning {} worker tasks...", self.config.threads));
-        for _i in 0..self.config.threads {
+        self.logger.info(&format!(
+            "Spawning {} worker tasks...",
+            self.config.worker_tasks
+        ));
+        for _i in 0..self.config.worker_tasks {
             let control_rx = self.control_tx.subscribe();
             let data_pool_rx_clone = self
                 .data_pool_rx
