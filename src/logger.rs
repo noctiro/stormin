@@ -1,7 +1,7 @@
 use chrono::Utc;
 use std::sync::mpsc::Sender;
 
-use crate::ui::DebugInfo;
+use crate::types::DebugInfo;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq)]

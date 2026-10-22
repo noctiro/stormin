@@ -1,6 +1,5 @@
 use crate::logger::Logger;
-use crate::ui::{DebugInfo, Stats, ThreadStats}; // Assuming Stats and related structs are accessible
-use crate::worker::TargetUpdate;
+use crate::types::{DebugInfo, Stats, TargetUpdate, ThreadStats};
 use dashmap::DashMap;
 use std::{
     collections::HashMap,

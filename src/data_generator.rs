@@ -1,8 +1,7 @@
 use crate::config::loader;
 use crate::logger::Logger;
 use crate::template::render_ast_node;
-use crate::ui::Stats;
-use crate::worker::PreGeneratedRequest;
+use crate::types::{PreGeneratedRequest, Stats};
 
 use dashmap::DashMap;
 use rand::rngs::StdRng;

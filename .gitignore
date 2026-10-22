@@ -1,6 +1,9 @@
 /target
 config.toml
 *temp*
+# Keep template source files despite the temporary-file pattern above.
+!/src/template/
+!/src/template/**
 *.txt
 
 

@@ -1,10 +1,9 @@
 use std::sync::atomic::Ordering;
 
 use crate::app::App;
-use crate::ui::RunningState;
-use crate::worker::WorkerMessage;
-use ratatui::layout::Position;
+use crate::types::{RunningState, WorkerMessage};
 use crossterm::event::{Event, KeyCode, MouseButton, MouseEventKind};
+use ratatui::layout::Position;
 
 // Define actions that can result from event handling
 #[derive(Debug, PartialEq, Eq)]

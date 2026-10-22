@@ -1,5 +1,6 @@
 use crate::config::loader::AttackConfig;
 use crate::logger::Logger;
+use crate::types::{PreGeneratedRequest, TargetUpdate, WorkerMessage};
 use reqwest::{Client, Method};
 use std::thread::ThreadId;
 use std::{
@@ -8,34 +9,6 @@ use std::{
 };
 use tokio::sync::{Mutex as TokioMutex, broadcast, mpsc};
 use tokio::time::sleep;
-
-// Structure for pre-generated request data
-#[derive(Debug, Clone)]
-pub struct PreGeneratedRequest {
-    pub target_id: usize,
-    pub target_url: String,
-    pub method: Method,
-    pub rendered_headers: Vec<(String, String)>,
-    pub rendered_params: Vec<(String, String)>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum WorkerMessage {
-    Pause,
-    Resume,
-    Stop,
-}
-
-#[derive(Debug)]
-pub struct TargetUpdate {
-    pub id: usize, // Unique ID of the target
-    pub url: String,
-    pub success: bool,
-    pub timestamp: Instant,
-    pub debug: Option<String>,         // Full debug message for logging
-    pub network_error: Option<String>, // Specific error for UI display when request fails early 响应前失败
-    pub thread_id: ThreadId,           // Add ThreadId
-}
 
 pub async fn worker_loop(
     mut control_rx: broadcast::Receiver<WorkerMessage>, // Control channel remains broadcast
@@ -50,7 +23,7 @@ pub async fn worker_loop(
 
     // 智能代理选择
     let proxy_config = if !config.proxies.is_empty() {
-        // 使用线程ID来确定代理，确保同一线程始终使用相同代理
+        // 根据任务启动时采样的运行时线程 ID 选择代理。
         let thread_id_hash = format!("{:?}", thread_id)
             .as_bytes()
             .iter()

@@ -5,22 +5,22 @@ license = "MIT"
 edition = "2024"
 
 [dependencies]
-rand = "0.10.1"
-serde = { version = "1.0.219", features = ["derive"] }
-toml = "1"
-base64 = "0.22.1"
-ratatui = "0.30.0"
-reqwest = { version = "0.13.3", features = ["json", "rustls", "socks", "query", "form"], default-features = false }
-crossterm = "0.29"
-ctrlc = "3.4.6"
-sysinfo = "0.39.0"
-url = "2"
-tokio = { version = "1", features = ["full"] }
-pest = "2.7"
-pest_derive = "2.7"
-chrono = { version = "0.4", features = ["serde"] }
-dashmap = "6.1.0"
-futures = "0.3.31"
+rand = "0.10.3"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"
+base64 = "0.23.1"
+ratatui = "0.30.2"
+reqwest = { version = "0.13.5", features = ["json", "rustls", "socks", "query", "form"], default-features = false }
+crossterm = "0.29.0"
+ctrlc = "3.5.2"
+sysinfo = "0.39.6"
+url = "2.5.8"
+tokio = { version = "1.54.1", features = ["full"] }
+pest = "2.9.4"
+pest_derive = "2.9.4"
+chrono = { version = "0.4.45", features = ["serde"] }
+dashmap = "6.2.1"
+futures = "0.3.34"
 
 [profile.release]
 opt-level = 3

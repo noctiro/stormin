@@ -4,11 +4,12 @@ mod data_generator;
 mod generator;
 mod logger;
 mod template;
+mod types;
 mod ui;
 mod worker;
 
 use app::App;
-use std::{env, error::Error, io};
+use std::{env, error::Error};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -25,22 +26,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Ok(app) => app,
         Err(e) => {
             eprintln!("Failed to initialize application: {}", e);
-            if !cli_mode {
-                // Attempt to disable raw mode if it was enabled (only in TUI mode)
-                let _ = crossterm::terminal::disable_raw_mode();
-                // Attempt to leave alternate screen if entered (only in TUI mode)
-                let _ =
-                    crossterm::execute!(io::stdout(), crossterm::terminal::LeaveAlternateScreen);
-            }
             return Err(e);
         }
-    }; // Spawn background threads
+    };
 
+    // Start background tasks and the TUI log receiver.
     if !cli_mode {
         app.spawn_log_receiver(); // Log receiver is TUI specific
     }
-    app.spawn_data_generators(); // First spawn data generators
-    app.spawn_workers(); // Then spawn workers
+    app.spawn_data_generators(); // Start data generator tasks first.
+    app.spawn_workers(); // Then start worker tasks.
 
     // Run the main application loop async (App::run handles TUI/CLI internally)
     let run_result = app.run().await;

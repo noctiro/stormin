@@ -1,41 +1,18 @@
 use super::proxy::{ProxyConfig, ProxyFileSource};
 use super::validator::ConfigError;
+use crate::template::{TemplateAstNode, parse_template_string};
 use futures::stream::{FuturesUnordered, StreamExt};
-use pest::Parser;
-use pest_derive::Parser;
 use reqwest::Url;
 use serde::Deserialize;
 use std::path::Path;
 use std::{error::Error, fs, num::NonZeroUsize, time::Duration};
 
-// --- Pest Parser Setup ---
-
-#[derive(Parser)]
-#[grammar = "template.pest"] // Path relative to src
-struct TemplateParser;
-
-// --- AST Definition ---
-
-// Represents the parsed structure of a template string
-#[derive(Clone, Debug, PartialEq)]
-pub enum TemplateAstNode {
-    Static(String),
-    FunctionCall {
-        def_name: Option<String>, // Optional name for variable definition
-        name: String,
-        args: Vec<TemplateAstNode>,
-    },
-    // Represents the top-level sequence of nodes in a template
-    Root(Vec<TemplateAstNode>),
-    TemplateString(Vec<TemplateAstNode>),
-}
-
 // --- Configuration Structs ---
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawConfig {
-    pub threads: Option<usize>,           // 攻击线程数
-    pub generator_threads: Option<usize>, // 数据生成器线程数
+    pub threads: Option<usize>,           // Tokio 工作任务数，保留兼容配置名
+    pub generator_threads: Option<usize>, // 数据生成任务数，保留兼容配置名
     pub timeout: Option<u64>,
     pub proxy: Option<ProxyFileSource>,
     /// 代理允许的最大延迟（毫秒），默认500ms
@@ -70,7 +47,9 @@ pub struct RawTarget {
 
 #[derive(Clone, Debug)]
 pub struct AttackConfig {
+    /// Tokio 工作任务数，沿用 threads 配置名。
     pub threads: usize,
+    /// 数据生成任务数，沿用 generator_threads 配置名。
     pub generator_threads: usize,
     pub timeout: Duration,
     pub targets: Vec<CompiledTarget>,
@@ -97,96 +76,6 @@ pub struct CompiledTarget {
 }
 
 // --- Parsing Logic ---
-
-// Parses a template string into an AST using Pest
-fn parse_template_string(input: &str) -> Result<TemplateAstNode, ConfigError> {
-    let pairs = TemplateParser::parse(Rule::template, input)
-        .map_err(|e| ConfigError::TemplateParseError(e.to_string()))?;
-    let top_pair = pairs
-        .peek()
-        .ok_or_else(|| ConfigError::TemplateParseError("Empty parse result".into()))?;
-    build_ast_from_pair(top_pair)
-        .map_err(|e| ConfigError::TemplateParseError(format!("Failed to build AST: {}", e)))
-}
-
-// Recursively builds the AST from Pest parse pairs
-fn build_ast_from_pair(
-    pair: pest::iterators::Pair<Rule>,
-) -> Result<TemplateAstNode, pest::error::Error<Rule>> {
-    match pair.as_rule() {
-        Rule::template => Ok(TemplateAstNode::Root(
-            pair.into_inner()
-                .filter(|p| p.as_rule() != Rule::EOI)
-                .map(build_ast_from_pair)
-                .collect::<Result<Vec<TemplateAstNode>, pest::error::Error<Rule>>>()?,
-        )),
-
-        Rule::expression => {
-            let mut inner_rules = pair.into_inner();
-            let identifier_pair = inner_rules
-                .next()
-                .expect("Expression must have an identifier");
-            let name = identifier_pair.as_str().to_string();
-
-            let mut def_name: Option<String> = None;
-            let mut args: Vec<TemplateAstNode> = Vec::new();
-
-            if let Some(next_pair) = inner_rules.peek() {
-                if next_pair.as_rule() == Rule::definition {
-                    let def_pair = inner_rules.next().unwrap();
-                    def_name = Some(def_pair.into_inner().next().unwrap().as_str().to_string());
-                }
-            }
-
-            if let Some(args_pair) = inner_rules.next() {
-                if args_pair.as_rule() == Rule::arguments {
-                    args = args_pair
-                        .into_inner()
-                        .map(build_ast_from_pair)
-                        .collect::<Result<_, _>>()?;
-                }
-            }
-
-            Ok(TemplateAstNode::FunctionCall {
-                def_name,
-                name,
-                args,
-            })
-        }
-
-        Rule::argument => build_ast_from_pair(pair.into_inner().next().unwrap()),
-
-        Rule::string_literal => {
-            let literal_str = pair.as_str();
-            let content = if literal_str.len() >= 2 {
-                &literal_str[1..literal_str.len() - 1]
-            } else {
-                ""
-            };
-            let unescaped = content.replace("\\\"", "\"").replace("\\\\", "\\");
-            Ok(TemplateAstNode::Static(unescaped))
-        }
-
-        Rule::static_text => Ok(TemplateAstNode::Static(pair.as_str().to_string())),
-        Rule::number => Ok(TemplateAstNode::Static(pair.as_str().to_string())),
-        Rule::identifier => Ok(TemplateAstNode::Static(pair.as_str().to_string())),
-
-        Rule::template_string => {
-            let children: Vec<TemplateAstNode> =
-                pair.into_inner()
-                    .map(build_ast_from_pair)
-                    .collect::<Result<Vec<TemplateAstNode>, pest::error::Error<Rule>>>()?;
-            Ok(TemplateAstNode::TemplateString(children))
-        }
-
-        Rule::template_string_literal => Ok(TemplateAstNode::Static(pair.as_str().to_string())),
-
-        _ => unreachable!(
-            "Unexpected rule: {:?} in build_ast_from_pair",
-            pair.as_rule()
-        ),
-    }
-}
 
 // Helper function to parse duration string (e.g., "10s", "5m", "1h")
 fn parse_duration_str(duration_str: &str) -> Result<Duration, ConfigError> {
@@ -451,11 +340,11 @@ pub async fn load_config_and_compile(
         }
     }
 
-    // Compute threads, generator_threads, and timeout
+    // Resolve worker task count, data generator task count, and timeout.
     let threads = if let Some(t) = raw.threads {
         if t < 1 {
-            logger.error("Thread count must be at least 1");
-            return Err(ConfigError::InvalidThreadCount.into());
+            logger.error("Worker task count must be at least 1");
+            return Err(ConfigError::InvalidWorkerTaskCount.into());
         }
         t
     } else {
@@ -467,8 +356,8 @@ pub async fn load_config_and_compile(
     let generator_threads = match raw.generator_threads {
         Some(g) => {
             if g < 1 {
-                logger.error("Generator thread count must be at least 1");
-                return Err(ConfigError::InvalidGeneratorThreadCount.into());
+                logger.error("Data generator task count must be at least 1");
+                return Err(ConfigError::InvalidGeneratorTaskCount.into());
             }
             g
         }

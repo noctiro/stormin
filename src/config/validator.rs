@@ -1,16 +1,16 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use super::loader::{Rule, TemplateAstNode};
+use crate::template::TemplateAstNode;
 
 /// Configuration validation error type
 #[derive(Debug)]
 pub enum ConfigError {
     InvalidUrl(String),
     InvalidMethod(String),
-    InvalidThreadCount,
+    InvalidWorkerTaskCount,
     InvalidTimeoutValue,
-    InvalidGeneratorThreadCount,
+    InvalidGeneratorTaskCount,
     ProxyParseError(String),
     TemplateParseError(String),
     NoTargets,
@@ -33,10 +33,12 @@ impl fmt::Display for ConfigError {
         match self {
             ConfigError::InvalidUrl(e) => write!(f, "Invalid URL: {}", e),
             ConfigError::InvalidMethod(m) => write!(f, "Invalid HTTP method: {}", m),
-            ConfigError::InvalidThreadCount => write!(f, "Thread count must be at least 1"),
+            ConfigError::InvalidWorkerTaskCount => {
+                write!(f, "Worker task count must be at least 1")
+            }
             ConfigError::InvalidTimeoutValue => write!(f, "Timeout must be a positive number"),
-            ConfigError::InvalidGeneratorThreadCount => {
-                write!(f, "Generator thread count must be at least 1")
+            ConfigError::InvalidGeneratorTaskCount => {
+                write!(f, "Data generator task count must be at least 1")
             }
             ConfigError::ProxyParseError(e) => write!(f, "Invalid proxy configuration: {}", e),
             ConfigError::TemplateParseError(e) => write!(f, "Template parsing error: {}", e),
@@ -91,12 +93,6 @@ impl fmt::Display for ConfigError {
 }
 
 impl std::error::Error for ConfigError {}
-
-impl From<pest::error::Error<Rule>> for ConfigError {
-    fn from(e: pest::error::Error<Rule>) -> Self {
-        ConfigError::TemplateParseError(e.to_string())
-    }
-}
 
 /// 校验HTTP方法是否有效
 pub fn is_valid_http_method(method: &str) -> bool {
